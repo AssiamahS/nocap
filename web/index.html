@@ -877,38 +877,35 @@
     }
 
     // Update meter based on current video time
+    // Uses wrist position signal (universal) if available, falls back to angle
     function updateRepMeter() {
       if (!poseData || !poseData.frames || poseData.frames.length === 0) return;
-      if (video.paused) return; // Stop updating when paused
+      if (video.paused) return;
 
       const t = video.currentTime;
-      let closest = poseData.frames[0];
-      for (const f of poseData.frames) {
-        if (f.t <= t) closest = f;
-        else break;
-      }
 
-      // Use the primary side angle
-      const angle = Math.max(closest.la, closest.ra);
+      let pct = 50;
 
-      // For curls: high angle = arm straight (REST), low angle = curled (TOP of rep)
-      // For press: high angle = locked out (TOP of rep), low angle = bottom
-      // So for curls, we invert: meter should be HIGH when angle is LOW (curled up)
-      const exercise = currentSession ? currentSession.exercise : 'bench_press';
-      const isCurl = exercise === 'forearm_curl';
-
-      let pct;
-      if (isCurl) {
-        // Invert: 180° = 0% (arm straight, resting), 30° = 100% (fully curled)
-        pct = Math.min(100, Math.max(0, ((180 - angle) / 150) * 100));
+      // Prefer wrist signal (position-based, exercise-agnostic)
+      if (poseData.wrist_signal && poseData.wrist_signal.length > 0) {
+        // wrist_signal is normalized 0-1, sampled every 3 frames
+        const sampleRate = poseData.sample_rate || 3;
+        const fps = poseData.fps || 30;
+        const idx = Math.floor(t * fps / sampleRate);
+        const clampedIdx = Math.min(idx, poseData.wrist_signal.length - 1);
+        pct = Math.max(0, Math.min(100, poseData.wrist_signal[clampedIdx] * 100));
       } else {
-        // Normal: 180° = 100% (locked out), 30° = 0% (bottom)
+        // Fallback: use elbow angle
+        let closest = poseData.frames[0];
+        for (const f of poseData.frames) {
+          if (f.t <= t) closest = f; else break;
+        }
+        const angle = Math.max(closest.la, closest.ra);
         pct = Math.min(100, Math.max(0, (angle / 180) * 100));
       }
 
       repMeterFill.style.height = `${pct}%`;
 
-      // Color: green at top of rep, red at bottom
       if (pct > 70) {
         repMeterFill.style.background = 'linear-gradient(to top, #34c759, #30d158)';
       } else if (pct > 40) {

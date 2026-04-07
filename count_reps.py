@@ -206,6 +206,92 @@ def count_reps_from_angles(angles, exercise="bench_press"):
     return reps, rep_indices, smoothed.tolist()
 
 
+def count_reps_wrist_tracking(landmarks_per_frame, frame_indices, fps):
+    """Universal rep counter — tracks wrist position in space.
+
+    Instead of tracking joint angles (which require knowing the exercise),
+    this tracks where the wrist moves. Every exercise moves the weight
+    in a repeating pattern. This finds that pattern automatically.
+
+    Returns: (rep_count, rep_frame_indices, wrist_signal, axis_info)
+    """
+    if len(landmarks_per_frame) < 10:
+        return 0, [], [], {}
+
+    # Extract wrist positions for both sides, both axes
+    signals = {}
+    for side, idx in [("L", 15), ("R", 16)]:
+        for axis, ai in [("x", 0), ("y", 1)]:
+            key = f"{side}_{axis}"
+            signals[key] = np.array([lm[idx][ai] for lm in landmarks_per_frame])
+
+    # Find the axis with the most periodic motion
+    # Score = number of clean peaks * prominence
+    best_key = None
+    best_score = 0
+    best_peaks = []
+
+    kernel = np.ones(5) / 5
+
+    for key, sig in signals.items():
+        smoothed = np.convolve(sig, kernel, mode='same')
+        sig_range = np.max(smoothed) - np.min(smoothed)
+
+        if sig_range < 0.03:  # Too little motion
+            continue
+
+        # Find peaks (high points) and valleys (low points)
+        prominence = sig_range * 0.15
+        peaks, props = find_peaks(smoothed, prominence=prominence, distance=8)
+        valleys, _ = find_peaks(-smoothed, prominence=prominence, distance=8)
+
+        # Score: prefer axes where peaks and valleys alternate cleanly
+        # and there are a reasonable number of them
+        n_cycles = min(len(peaks), len(valleys))
+        if n_cycles == 0:
+            continue
+
+        avg_prominence = np.mean(props['prominences'][:n_cycles]) if len(props['prominences']) > 0 else 0
+        score = n_cycles * avg_prominence
+
+        if score > best_score:
+            best_score = score
+            best_key = key
+            best_peaks = valleys  # valleys = bottom of each rep
+
+    if best_key is None or best_score == 0:
+        return 0, [], [], {}
+
+    # Re-analyze the best axis with refined detection
+    sig = signals[best_key]
+    smoothed = np.convolve(sig, kernel, mode='same')
+    sig_range = np.max(smoothed) - np.min(smoothed)
+
+    # Use peak detection to count full cycles
+    prominence = sig_range * 0.15
+    peaks, _ = find_peaks(smoothed, prominence=prominence, distance=8)
+    valleys, _ = find_peaks(-smoothed, prominence=prominence, distance=8)
+
+    # Count reps as complete peak-valley-peak OR valley-peak-valley cycles
+    # Whichever gives more reps
+    reps_pv = min(len(peaks), len(valleys))  # peak-valley pairs
+    rep_indices = valleys[:reps_pv].tolist() if len(valleys) >= reps_pv else peaks[:reps_pv].tolist()
+
+    # Normalize signal to 0-1 for the meter
+    normalized = ((smoothed - np.min(smoothed)) / (sig_range + 1e-6)).tolist()
+
+    axis_info = {
+        "axis": best_key,
+        "side": best_key.split("_")[0],
+        "direction": best_key.split("_")[1],
+        "range": round(float(sig_range), 4),
+        "n_peaks": int(len(peaks)),
+        "n_valleys": int(len(valleys)),
+    }
+
+    return reps_pv, rep_indices, normalized, axis_info
+
+
 def process_video(video_path, exercise="bench_press", output_video=None, verbose=False, save_poses=None):
     """Process a video file and count exercise reps."""
     ensure_model()
@@ -249,6 +335,7 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
     left_angles = []
     right_angles = []
     frame_indices = []
+    all_landmarks = []  # Per-frame landmark arrays for wrist tracking
     pose_frames = []  # Per-frame 3D pose data for visualization
     pose_detected_frames = 0
 
@@ -289,6 +376,7 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
                 left_angles.append(left_angle)
                 right_angles.append(right_angle)
                 frame_indices.append(frame_idx)
+                all_landmarks.append([[lm.x, lm.y, lm.z] for lm in landmarks])
 
                 # Save 3D pose data (sample every 3 frames to keep file size down)
                 if save_poses and frame_idx % 3 == 0:
@@ -351,10 +439,41 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
         primary_angles = primary_angles[start_idx:]
         frame_indices = frame_indices[start_idx:]
 
-    rep_count, peak_indices, smoothed = count_reps_from_angles(primary_angles, exercise)
+    rep_count_angle, peak_indices_angle, smoothed = count_reps_from_angles(primary_angles, exercise)
+
+    # --- Wrist position tracking (universal, exercise-agnostic) ---
+    rep_count_wrist, peak_indices_wrist, wrist_signal, axis_info = \
+        count_reps_wrist_tracking(all_landmarks, frame_indices, fps)
+
+    if axis_info:
+        print(f"Wrist tracking: {axis_info['axis']} axis, {axis_info['n_peaks']} peaks, {axis_info['n_valleys']} valleys")
+        print(f"  Angle-based: {rep_count_angle} reps | Wrist-based: {rep_count_wrist} reps")
+
+    # Pick the best method:
+    # - If both agree (within 1), use wrist (more universal)
+    # - If wrist is slightly higher, trust wrist (angle often undercounts)
+    # - If wrist is way higher (>50% more), it's likely counting noise — use angle
+    # - If angle is higher, use angle (wrist may have missed motion axis)
+    if rep_count_wrist > 0 and axis_info:
+        ratio = rep_count_wrist / max(rep_count_angle, 1)
+        if ratio <= 1.5 and rep_count_wrist >= rep_count_angle:
+            rep_count = rep_count_wrist
+            rep_indices_final = peak_indices_wrist
+            method = "wrist_position"
+            print(f"  -> Using WRIST tracking ({rep_count} reps)")
+        else:
+            rep_count = rep_count_angle
+            rep_indices_final = peak_indices_angle
+            method = "elbow_angle"
+            print(f"  -> Using ANGLE tracking ({rep_count} reps, wrist ratio {ratio:.1f}x too high)")
+    else:
+        rep_count = rep_count_angle
+        rep_indices_final = peak_indices_angle
+        method = "elbow_angle"
+        print(f"  -> Using ANGLE tracking ({rep_count} reps)")
 
     rep_timestamps = []
-    for pi in peak_indices:
+    for pi in rep_indices_final:
         if pi < len(frame_indices):
             rep_timestamps.append(round(frame_indices[pi] / fps, 2))
 
@@ -362,6 +481,9 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
         "video": str(video_path),
         "exercise": exercise,
         "reps": rep_count,
+        "method": method,
+        "reps_angle": rep_count_angle,
+        "reps_wrist": rep_count_wrist,
         "rep_timestamps_sec": rep_timestamps,
         "duration_sec": round(duration, 2),
         "fps": round(fps, 1),
@@ -370,6 +492,7 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
         "primary_side": primary_side,
         "angle_range_deg": round(float(trimmed_range), 1),
         "exercise_start_sec": round(frame_indices[0] / fps, 2) if frame_indices else 0,
+        "wrist_axis": axis_info.get("axis", ""),
     }
 
     # Save 3D pose data for visualization
@@ -382,6 +505,9 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
             "sample_rate": 3,
             "connections": SKELETON_CONNECTIONS,
             "frames": pose_frames,
+            "wrist_signal": wrist_signal if wrist_signal else [],
+            "wrist_axis": axis_info.get("axis", ""),
+            "method": method,
         }
         with open(save_poses, 'w') as f:
             json.dump(pose_data, f)
