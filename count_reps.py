@@ -371,16 +371,6 @@ def count_reps_wrist_tracking(landmarks_per_frame, frame_indices, fps, exercise=
     peaks = np.array([p for p in peaks if active_mask[p]])
     valleys = np.array([p for p in valleys if active_mask[p]])
 
-    # --- READY POSITION FILTER ---
-    # Only count peaks/valleys when the person is in exercise position.
-    # This filters out talking, walking, adjusting weights.
-    ready_mask = np.array([is_ready_position(lm, exercise) for lm in landmarks_per_frame])
-    ready_fraction = np.mean(ready_mask)
-
-    if ready_fraction < 0.9:  # Only filter if not always "ready" (avoids breaking clean vids)
-        peaks = np.array([p for p in peaks if p < len(ready_mask) and ready_mask[p]])
-        valleys = np.array([p for p in valleys if p < len(ready_mask) and ready_mask[p]])
-
     # --- CLUSTER FILTER ---
     # Real exercise reps come in dense bursts (sets). Noise peaks are scattered.
     # Find the largest cluster of valleys (bottom of reps) and keep only those.
@@ -589,21 +579,47 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
         print(f"Wrist tracking: {axis_info['axis']} axis, {axis_info['n_peaks']} peaks, {axis_info['n_valleys']} valleys")
         print(f"  Angle-based: {rep_count_angle} reps | Wrist-based: {rep_count_wrist} reps")
 
-    # Wrist tracking has set detection (filters out talking/setup noise).
-    # Angle tracking does NOT have set detection, so it overcounts on videos
-    # with non-exercise movement.
-    # Default to wrist tracking when available — it's more universal and
-    # has better noise filtering. Only fall back to angle if wrist detected 0.
-    if rep_count_wrist > 0 and axis_info:
+    # Angle-based is primary when exercise type is specified (it was working).
+    # Wrist tracking is used only as confirmation / sanity check.
+    print(f"  Angle count: {rep_count_angle} | Wrist count: {rep_count_wrist}")
+
+    if rep_count_angle > 0:
+        # Angle-based is primary
+        if rep_count_wrist > 0 and abs(rep_count_angle - rep_count_wrist) <= 1:
+            # They agree — use angle (more reliable for known exercises)
+            rep_count = rep_count_angle
+            rep_indices_final = peak_indices_angle
+            method = "elbow_angle"
+            print(f"  -> Using ANGLE tracking ({rep_count} reps, wrist confirms)")
+        elif rep_count_wrist > 0 and abs(rep_count_angle - rep_count_wrist) > 2:
+            # They disagree significantly — use the LOWER count (fewer false positives)
+            if rep_count_angle <= rep_count_wrist:
+                rep_count = rep_count_angle
+                rep_indices_final = peak_indices_angle
+                method = "elbow_angle"
+                print(f"  -> Using ANGLE tracking ({rep_count} reps, lower of disagreement)")
+            else:
+                rep_count = rep_count_wrist
+                rep_indices_final = peak_indices_wrist
+                method = "wrist_position"
+                print(f"  -> Using WRIST tracking ({rep_count} reps, lower of disagreement)")
+        else:
+            # Wrist is 0 or difference is exactly 2 — trust angle
+            rep_count = rep_count_angle
+            rep_indices_final = peak_indices_angle
+            method = "elbow_angle"
+            print(f"  -> Using ANGLE tracking ({rep_count} reps)")
+    elif rep_count_wrist > 0:
+        # Angle detected nothing, fall back to wrist
         rep_count = rep_count_wrist
         rep_indices_final = peak_indices_wrist
         method = "wrist_position"
-        print(f"  -> Using WRIST tracking ({rep_count} reps)")
+        print(f"  -> Using WRIST tracking ({rep_count} reps, angle detected 0)")
     else:
-        rep_count = rep_count_angle
-        rep_indices_final = peak_indices_angle
-        method = "elbow_angle"
-        print(f"  -> Using ANGLE tracking ({rep_count} reps, no wrist signal)")
+        rep_count = 0
+        rep_indices_final = []
+        method = "none"
+        print(f"  -> No reps detected by either method")
 
     rep_timestamps = []
     for pi in rep_indices_final:

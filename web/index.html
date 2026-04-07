@@ -624,7 +624,13 @@
 
       const rq = session.rep_quality || [];
       document.getElementById('statsContent').innerHTML = `
-        <div class="stat-row"><span class="label">Exercise</span><span class="value">${fmtEx(session.exercise)}</span></div>
+        <div class="stat-row"><span class="label">Exercise</span><span class="value">
+          <select id="exerciseChange" style="background:#1a1a1a;border:1px solid #333;color:#e0e0e0;padding:2px 6px;border-radius:4px;font-size:12px;cursor:pointer;">
+            ${['bench_press','push_up','forearm_curl','tricep_extension'].map(e =>
+              `<option value="${e}" ${e === session.exercise ? 'selected' : ''}>${fmtEx(e)}</option>`
+            ).join('')}
+          </select>
+        </span></div>
         <div class="stat-row"><span class="label">Reps Detected</span><span class="value">${session.reps_counted || session.reps}</span></div>
         ${session.reps_actual ? `<div class="stat-row"><span class="label">Reps Actual</span><span class="value">${session.reps_actual}</span></div>` : ''}
         ${session.equipment ? `<div class="stat-row"><span class="label">Equipment</span><span class="value">${fmtEx(session.equipment)}</span></div>` : ''}
@@ -633,6 +639,24 @@
         <div class="stat-row"><span class="label">Side Tracked</span><span class="value">${session.primary_side || '?'}</span></div>
         <div class="stat-row"><span class="label">Duration</span><span class="value">${fmt(session.duration_sec || 0)}</span></div>
       `;
+
+      // Exercise type change handler
+      const exSelect = document.getElementById('exerciseChange');
+      if (exSelect) {
+        exSelect.addEventListener('change', async () => {
+          const newEx = exSelect.value;
+          await fetch(`/api/session/${session.id}/exercise`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exercise: newEx }),
+          });
+          // Reload sessions and re-select this one
+          sessions = await (await fetch('/api/sessions')).json();
+          renderSessionList();
+          const idx = sessions.findIndex(s => s.id === session.id);
+          if (idx >= 0) loadSession(sessions[idx], idx);
+        });
+      }
 
       const repEl = document.getElementById('repTimeline');
       repEl.innerHTML = repMarkers.map((t, i) => `
