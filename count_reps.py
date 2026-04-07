@@ -104,6 +104,70 @@ def detect_exercise_start(angles, window=15, threshold=5.0):
     return 0
 
 
+def is_ready_position(landmarks, exercise):
+    """Check if the person is in the starting position for an exercise.
+
+    This is the key to filtering noise — only count reps when the body
+    is in the correct pose. Returns True if ready.
+
+    Landmarks are [[x, y, z], ...] for all 33 MediaPipe points.
+    """
+    if len(landmarks) < 33:
+        return False
+
+    # Key landmark positions (normalized 0-1)
+    l_shoulder = landmarks[11]
+    r_shoulder = landmarks[12]
+    l_elbow = landmarks[13]
+    r_elbow = landmarks[14]
+    l_wrist = landmarks[15]
+    r_wrist = landmarks[16]
+    l_hip = landmarks[23]
+    r_hip = landmarks[24]
+
+    # Shoulder width (used for relative measurements)
+    shoulder_width = abs(l_shoulder[0] - r_shoulder[0])
+    if shoulder_width < 0.01:
+        return False  # Can't detect shoulders
+
+    # Calculate elbow angle for both sides
+    def angle_3pt(a, b, c):
+        a, b, c = np.array(a[:2]), np.array(b[:2]), np.array(c[:2])
+        ba, bc = a - b, c - b
+        cos = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-6)
+        return np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
+
+    l_elbow_angle = angle_3pt(l_shoulder, l_elbow, l_wrist)
+    r_elbow_angle = angle_3pt(r_shoulder, r_elbow, r_wrist)
+
+    # Use the better side (higher elbow angle = more visible to camera)
+    best_elbow = max(l_elbow_angle, r_elbow_angle)
+
+    if exercise == "bench_press":
+        # Ready: wrists above hips (holding bar/dumbbells), arms somewhat engaged
+        wrist_above_hip = (l_wrist[1] < l_hip[1]) or (r_wrist[1] < r_hip[1])
+        return wrist_above_hip
+
+    elif exercise == "forearm_curl":
+        # Ready: standing (shoulders above hips)
+        standing = (l_shoulder[1] < l_hip[1]) or (r_shoulder[1] < r_hip[1])
+        return standing
+
+    elif exercise == "tricep_extension":
+        # Ready: at least one elbow above or near shoulder height
+        # (arms raised for overhead extension)
+        elbow_raised = (l_elbow[1] < l_shoulder[1] + 0.15) or (r_elbow[1] < r_shoulder[1] + 0.15)
+        return elbow_raised
+
+    elif exercise == "push_up":
+        # Ready: body roughly horizontal
+        horizontal = abs(l_shoulder[1] - l_hip[1]) < 0.25
+        return horizontal
+
+    # Default: always ready (no specific pose check)
+    return True
+
+
 def count_reps_from_angles(angles, exercise="bench_press"):
     """Count reps using a state machine that requires full rep cycles.
 
@@ -206,7 +270,7 @@ def count_reps_from_angles(angles, exercise="bench_press"):
     return reps, rep_indices, smoothed.tolist()
 
 
-def count_reps_wrist_tracking(landmarks_per_frame, frame_indices, fps):
+def count_reps_wrist_tracking(landmarks_per_frame, frame_indices, fps, exercise="bench_press"):
     """Universal rep counter — tracks wrist position in space.
 
     Instead of tracking joint angles (which require knowing the exercise),
@@ -307,6 +371,16 @@ def count_reps_wrist_tracking(landmarks_per_frame, frame_indices, fps):
     peaks = np.array([p for p in peaks if active_mask[p]])
     valleys = np.array([p for p in valleys if active_mask[p]])
 
+    # --- READY POSITION FILTER ---
+    # Only count peaks/valleys when the person is in exercise position.
+    # This filters out talking, walking, adjusting weights.
+    ready_mask = np.array([is_ready_position(lm, exercise) for lm in landmarks_per_frame])
+    ready_fraction = np.mean(ready_mask)
+
+    if ready_fraction < 0.9:  # Only filter if not always "ready" (avoids breaking clean vids)
+        peaks = np.array([p for p in peaks if p < len(ready_mask) and ready_mask[p]])
+        valleys = np.array([p for p in valleys if p < len(ready_mask) and ready_mask[p]])
+
     # --- CLUSTER FILTER ---
     # Real exercise reps come in dense bursts (sets). Noise peaks are scattered.
     # Find the largest cluster of valleys (bottom of reps) and keep only those.
@@ -390,8 +464,13 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
 
     writer = None
     if output_video:
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        # Use H.264 codec so videos play in browsers
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
         writer = cv2.VideoWriter(str(output_video), fourcc, fps, (width, height))
+        if not writer.isOpened():
+            # Fallback to mp4v if avc1 not available, will need ffmpeg re-encode
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            writer = cv2.VideoWriter(str(output_video), fourcc, fps, (width, height))
 
     left_angles = []
     right_angles = []
@@ -504,7 +583,7 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
 
     # --- Wrist position tracking (universal, exercise-agnostic) ---
     rep_count_wrist, peak_indices_wrist, wrist_signal, axis_info = \
-        count_reps_wrist_tracking(all_landmarks, frame_indices, fps)
+        count_reps_wrist_tracking(all_landmarks, frame_indices, fps, exercise)
 
     if axis_info:
         print(f"Wrist tracking: {axis_info['axis']} axis, {axis_info['n_peaks']} peaks, {axis_info['n_valleys']} valleys")
