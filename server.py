@@ -68,6 +68,8 @@ def serve_annotated(session_id):
     mappings = {
         "IMG_6887_bench_press": "bench_annotated.mp4",
         "IMG_6896_forearm_curl": "forearm_annotated.mp4",
+        "video_bench_press": "video_annotated.mp4",
+        "testK_dumbpress": "dumbpress_annotated.mp4",
     }
     fname = mappings.get(session_id)
     if fname:
@@ -84,6 +86,8 @@ def serve_poses(session_id):
     mappings = {
         "IMG_6887_bench_press": "bench_poses.json",
         "IMG_6896_forearm_curl": "forearm_poses.json",
+        "video_bench_press": "video_poses.json",
+        "testK_dumbpress": "dumbpress_poses.json",
     }
     fname = mappings.get(session_id)
     if fname:
