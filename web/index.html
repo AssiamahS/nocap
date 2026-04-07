@@ -428,6 +428,7 @@
       <option value="bench_press">Bench Press</option>
       <option value="push_up">Push Ups</option>
       <option value="forearm_curl">Forearm Curl</option>
+      <option value="tricep_extension">Tricep Extension</option>
     </select>
     <button class="btn-analyze" id="btnAnalyze">Count Reps</button>
   </div>
@@ -878,23 +879,36 @@
     // Update meter based on current video time
     function updateRepMeter() {
       if (!poseData || !poseData.frames || poseData.frames.length === 0) return;
+      if (video.paused) return; // Stop updating when paused
 
       const t = video.currentTime;
-      // Find closest pose frame
       let closest = poseData.frames[0];
       for (const f of poseData.frames) {
         if (f.t <= t) closest = f;
         else break;
       }
 
-      // Use the primary side angle — pick whichever is higher (camera-facing)
+      // Use the primary side angle
       const angle = Math.max(closest.la, closest.ra);
 
-      // Normalize to 0-100% (0° = fully contracted at bottom, 180° = fully extended at top)
-      const pct = Math.min(100, Math.max(0, (angle / 180) * 100));
+      // For curls: high angle = arm straight (REST), low angle = curled (TOP of rep)
+      // For press: high angle = locked out (TOP of rep), low angle = bottom
+      // So for curls, we invert: meter should be HIGH when angle is LOW (curled up)
+      const exercise = currentSession ? currentSession.exercise : 'bench_press';
+      const isCurl = exercise === 'forearm_curl';
+
+      let pct;
+      if (isCurl) {
+        // Invert: 180° = 0% (arm straight, resting), 30° = 100% (fully curled)
+        pct = Math.min(100, Math.max(0, ((180 - angle) / 150) * 100));
+      } else {
+        // Normal: 180° = 100% (locked out), 30° = 0% (bottom)
+        pct = Math.min(100, Math.max(0, (angle / 180) * 100));
+      }
+
       repMeterFill.style.height = `${pct}%`;
 
-      // Color: green when extended (high), red when contracted (low)
+      // Color: green at top of rep, red at bottom
       if (pct > 70) {
         repMeterFill.style.background = 'linear-gradient(to top, #34c759, #30d158)';
       } else if (pct > 40) {

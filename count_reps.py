@@ -132,10 +132,15 @@ def count_reps_from_angles(angles, exercise="bench_press"):
         contracted_threshold = min(max(p10 + (p50 - p10) * 0.3, 40), 80)
         min_transition_frames = 10
     elif exercise == "forearm_curl":
-        # Curl: extended ~130-170°, contracted ~50-90°
+        # Curl: extended (arm straight) ~130-170°, contracted (curled up) ~50-90°
         extended_threshold = min(max(p50 + (p90 - p50) * 0.3, 110), 150)
         contracted_threshold = min(max(p10 + (p50 - p10) * 0.3, 50), 100)
         min_transition_frames = 6
+    elif exercise == "tricep_extension":
+        # Tricep ext: extended (arms overhead straight) ~140-170°, contracted (bent behind head) ~40-80°
+        extended_threshold = min(max(p50 + (p90 - p50) * 0.3, 100), 140)
+        contracted_threshold = min(max(p10 + (p50 - p10) * 0.3, 40), 90)
+        min_transition_frames = 8
     else:  # push_up
         extended_threshold = min(max(p50 + (p90 - p50) * 0.3, 140), 165)
         contracted_threshold = min(max(p10 + (p50 - p10) * 0.3, 80), 120)
@@ -395,7 +400,7 @@ def main():
     parser = argparse.ArgumentParser(description="nocap v1 - Exercise Rep Counter")
     parser.add_argument("video", help="Path to video file")
     parser.add_argument("-e", "--exercise",
-                        choices=["bench_press", "push_up", "forearm_curl"],
+                        choices=["bench_press", "push_up", "forearm_curl", "tricep_extension"],
                         default="bench_press")
     parser.add_argument("-o", "--output", help="Save annotated video")
     parser.add_argument("-p", "--save-poses", help="Save 3D pose data to JSON file")

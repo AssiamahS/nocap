@@ -184,35 +184,71 @@ def analyze_video():
 
 def download_video(url):
     """Download video from URL using yt-dlp."""
-    output_template = str(DOWNLOADS_DIR / "%(title)s.%(ext)s")
+    output_template = str(DOWNLOADS_DIR / "%(title).50s_%(id)s.%(ext)s")
 
-    proc = subprocess.run(
-        ["yt-dlp",
-         "--no-playlist",
-         "-f", "best[height<=720]",  # Cap at 720p to keep processing fast
-         "-o", output_template,
-         "--print", "after_move:filepath",
-         "--print", "%(title)s",
-         url],
-        capture_output=True, text=True, timeout=120,
-    )
+    # Try with cookies from browser for sites that need auth
+    cmd = [
+        "yt-dlp",
+        "--no-playlist",
+        "-f", "best[height<=720]/best",  # Fallback if 720p not available
+        "-o", output_template,
+        "--print", "after_move:filepath",
+        "--print", "%(title)s",
+        "--no-overwrites",
+        "--restrict-filenames",
+        url,
+    ]
+
+    print(f"[nocap] Downloading: {url}")
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
+    print(f"[nocap] yt-dlp exit code: {proc.returncode}")
+    if proc.stderr:
+        print(f"[nocap] yt-dlp stderr: {proc.stderr[-500:]}")
+    if proc.stdout:
+        print(f"[nocap] yt-dlp stdout: {proc.stdout[-500:]}")
 
     if proc.returncode != 0:
-        raise Exception(proc.stderr[-300:])
+        err = proc.stderr.strip()
+        # Common errors with helpful messages
+        if "HTTP Error 403" in err or "HTTP Error 429" in err:
+            raise Exception("Site blocked the download. Try a different URL or shorter video.")
+        if "Unsupported URL" in err:
+            raise Exception(f"URL not supported. Try YouTube, TikTok, or Instagram.")
+        if "Video unavailable" in err or "Private video" in err:
+            raise Exception("Video is private or unavailable.")
+        raise Exception(err[-300:])
 
     lines = proc.stdout.strip().split("\n")
-    # Last two lines: filepath, title
-    filepath = lines[-2] if len(lines) >= 2 else lines[-1]
-    title = lines[-1] if len(lines) >= 2 else Path(filepath).stem
+    # yt-dlp --print outputs: filepath on one line, title on next
+    # But it also prints download progress lines, so take the last 2 non-empty
+    non_empty = [l.strip() for l in lines if l.strip()]
 
-    if not Path(filepath).exists():
-        # yt-dlp may have already downloaded it
-        # Try to find the file
-        for f in DOWNLOADS_DIR.glob("*"):
-            if f.is_file() and f.suffix in ('.mp4', '.webm', '.mkv'):
-                filepath = str(f)
-                break
+    filepath = None
+    title = "unknown"
 
+    # Find the filepath (it's an absolute path or relative path that exists)
+    for line in reversed(non_empty):
+        if Path(line).exists():
+            filepath = line
+            break
+
+    if not filepath:
+        # Look for most recently modified file in downloads dir
+        files = sorted(DOWNLOADS_DIR.glob("*"), key=lambda f: f.stat().st_mtime, reverse=True)
+        video_files = [f for f in files if f.suffix in ('.mp4', '.webm', '.mkv', '.mov')]
+        if video_files:
+            filepath = str(video_files[0])
+        else:
+            raise Exception("Download completed but can't find the file")
+
+    # Title is the last line
+    title = non_empty[-1] if non_empty else Path(filepath).stem
+    if Path(title).exists():
+        # It's a filepath, not a title
+        title = Path(filepath).stem
+
+    print(f"[nocap] Downloaded: {filepath} (title: {title})")
     return {"path": filepath, "title": title}
 
 
