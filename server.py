@@ -53,12 +53,44 @@ def get_session(session_id):
 @app.route("/api/video/<filename>")
 def serve_video(filename):
     """Serve a video file with range request support."""
-    # Check multiple locations
     for base in [VIDEOS_DIR, DATA_DIR / "videos", Path.home() / "Downloads"]:
         path = base / filename
         if path.exists():
             return send_file(path, conditional=True)
     return jsonify({"error": "video not found"}), 404
+
+
+@app.route("/api/annotated/<session_id>")
+def serve_annotated(session_id):
+    """Serve the annotated (skeleton overlay) video for a session."""
+    # Map session IDs to annotated video files
+    web_dir = Path(__file__).parent / "web"
+    mappings = {
+        "IMG_6887_bench_press": "bench_annotated.mp4",
+        "IMG_6896_forearm_curl": "forearm_annotated.mp4",
+    }
+    fname = mappings.get(session_id)
+    if fname:
+        path = web_dir / fname
+        if path.exists():
+            return send_file(path, conditional=True)
+    return jsonify({"error": "annotated video not found"}), 404
+
+
+@app.route("/api/poses/<session_id>")
+def serve_poses(session_id):
+    """Serve 3D pose data for a session."""
+    web_dir = Path(__file__).parent / "web"
+    mappings = {
+        "IMG_6887_bench_press": "bench_poses.json",
+        "IMG_6896_forearm_curl": "forearm_poses.json",
+    }
+    fname = mappings.get(session_id)
+    if fname:
+        path = web_dir / fname
+        if path.exists():
+            return send_file(path)
+    return jsonify({"error": "pose data not found"}), 404
 
 
 @app.route("/api/analyze", methods=["POST"])

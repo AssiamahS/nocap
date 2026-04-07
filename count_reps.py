@@ -27,6 +27,59 @@ RIGHT_SHOULDER = 12
 RIGHT_ELBOW = 14
 RIGHT_WRIST = 16
 
+# Full skeleton connections (like Jimna/Built red lines)
+SKELETON_CONNECTIONS = [
+    # Torso
+    (11, 12), (11, 23), (12, 24), (23, 24),
+    # Left arm
+    (11, 13), (13, 15),
+    # Right arm
+    (12, 14), (14, 16),
+    # Left leg
+    (23, 25), (25, 27),
+    # Right leg
+    (24, 26), (26, 28),
+    # Hands
+    (15, 17), (15, 19), (15, 21),
+    (16, 18), (16, 20), (16, 22),
+    # Feet
+    (27, 29), (27, 31),
+    (28, 30), (28, 32),
+]
+
+# Key landmarks to draw as larger dots
+KEY_LANDMARKS = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]
+
+
+def draw_skeleton(frame, landmarks, w, h, left_angle, right_angle):
+    """Draw full skeleton overlay on frame like Jimna/Built style."""
+    # Draw connections (red lines)
+    for a, b in SKELETON_CONNECTIONS:
+        if a < len(landmarks) and b < len(landmarks):
+            pt1 = (int(landmarks[a].x * w), int(landmarks[a].y * h))
+            pt2 = (int(landmarks[b].x * w), int(landmarks[b].y * h))
+            # Skip if landmarks are off-screen
+            if (0 <= pt1[0] <= w and 0 <= pt1[1] <= h and
+                    0 <= pt2[0] <= w and 0 <= pt2[1] <= h):
+                cv2.line(frame, pt1, pt2, (0, 0, 255), 3)
+
+    # Draw key joint dots (larger red circles with white border)
+    for idx in KEY_LANDMARKS:
+        if idx < len(landmarks):
+            cx, cy = int(landmarks[idx].x * w), int(landmarks[idx].y * h)
+            if 0 <= cx <= w and 0 <= cy <= h:
+                cv2.circle(frame, (cx, cy), 6, (255, 255, 255), -1)
+                cv2.circle(frame, (cx, cy), 4, (0, 0, 255), -1)
+
+    # Draw angle arc at elbows
+    for side, pts_idx in [("L", [LEFT_SHOULDER, LEFT_ELBOW, LEFT_WRIST]),
+                          ("R", [RIGHT_SHOULDER, RIGHT_ELBOW, RIGHT_WRIST])]:
+        elbow = landmarks[pts_idx[1]]
+        ex, ey = int(elbow.x * w), int(elbow.y * h)
+        angle = left_angle if side == "L" else right_angle
+        cv2.putText(frame, f"{angle:.0f}", (ex + 10, ey - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
 
 def ensure_model():
     if not MODEL_PATH.exists():
@@ -148,7 +201,7 @@ def count_reps_from_angles(angles, exercise="bench_press"):
     return reps, rep_indices, smoothed.tolist()
 
 
-def process_video(video_path, exercise="bench_press", output_video=None, verbose=False):
+def process_video(video_path, exercise="bench_press", output_video=None, verbose=False, save_poses=None):
     """Process a video file and count exercise reps."""
     ensure_model()
 
@@ -191,6 +244,7 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
     left_angles = []
     right_angles = []
     frame_indices = []
+    pose_frames = []  # Per-frame 3D pose data for visualization
     pose_detected_frames = 0
 
     with PoseLandmarker.create_from_options(options) as landmarker:
@@ -231,18 +285,23 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
                 right_angles.append(right_angle)
                 frame_indices.append(frame_idx)
 
+                # Save 3D pose data (sample every 3 frames to keep file size down)
+                if save_poses and frame_idx % 3 == 0:
+                    pose_frames.append({
+                        "f": frame_idx,
+                        "t": round(frame_idx / fps, 3),
+                        "lm": [[round(lm.x, 4), round(lm.y, 4), round(lm.z, 4)]
+                               for lm in landmarks],
+                        "la": round(left_angle, 1),
+                        "ra": round(right_angle, 1),
+                    })
+
                 if verbose and frame_idx % 30 == 0:
                     print(f"  Frame {frame_idx} ({frame_idx/fps:.1f}s): L={left_angle:.1f} R={right_angle:.1f}")
 
-                # Draw on output video
+                # Draw skeleton on output video
                 if writer:
-                    for lm in landmarks:
-                        cx, cy = int(lm.x * width), int(lm.y * height)
-                        cv2.circle(frame, (cx, cy), 3, (0, 255, 0), -1)
-                    cv2.putText(frame, f"L: {left_angle:.0f}", (10, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                    cv2.putText(frame, f"R: {right_angle:.0f}", (10, 70),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                    draw_skeleton(frame, landmarks, width, height, left_angle, right_angle)
 
             if writer:
                 writer.write(frame)
@@ -308,6 +367,21 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
         "exercise_start_sec": round(frame_indices[0] / fps, 2) if frame_indices else 0,
     }
 
+    # Save 3D pose data for visualization
+    if save_poses and pose_frames:
+        pose_data = {
+            "video": str(video_path),
+            "fps": round(fps, 1),
+            "width": width,
+            "height": height,
+            "sample_rate": 3,
+            "connections": SKELETON_CONNECTIONS,
+            "frames": pose_frames,
+        }
+        with open(save_poses, 'w') as f:
+            json.dump(pose_data, f)
+        print(f"Saved {len(pose_frames)} pose frames to {save_poses}")
+
     print(f"\n{'='*40}")
     print(f"  REPS COUNTED: {rep_count}")
     if rep_timestamps:
@@ -324,6 +398,7 @@ def main():
                         choices=["bench_press", "push_up", "forearm_curl"],
                         default="bench_press")
     parser.add_argument("-o", "--output", help="Save annotated video")
+    parser.add_argument("-p", "--save-poses", help="Save 3D pose data to JSON file")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     args = parser.parse_args()
@@ -333,7 +408,7 @@ def main():
         print(f"Error: Video not found: {video_path}")
         sys.exit(1)
 
-    result = process_video(video_path, args.exercise, args.output, args.verbose)
+    result = process_video(video_path, args.exercise, args.output, args.verbose, args.save_poses)
 
     if args.json:
         print(json.dumps(result, indent=2))
