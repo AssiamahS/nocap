@@ -543,7 +543,7 @@
       const el = document.getElementById('sessionList');
       el.innerHTML = sessions.map((s, i) => `
         <div class="session-item" data-idx="${i}">
-          <div class="title">${fmtEx(s.exercise)}</div>
+          <div class="title" data-id="${s.id}" title="Double-click to rename">${s.display_name || fmtEx(s.exercise)}</div>
           <div class="meta">
             <span class="reps-badge">${s.reps_counted || s.reps} reps</span>
             <span>${s.date || ''}</span>
@@ -555,6 +555,27 @@
       el.querySelectorAll('.session-item').forEach(item => {
         item.addEventListener('click', () => {
           loadSession(sessions[parseInt(item.dataset.idx)], parseInt(item.dataset.idx));
+        });
+      });
+
+      // Double-click to rename
+      el.querySelectorAll('.title').forEach(title => {
+        title.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          const id = title.dataset.id;
+          const current = title.textContent;
+          const newName = prompt('Rename session:', current);
+          if (newName && newName !== current) {
+            fetch(`/api/session/${id}/rename`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: newName }),
+            }).then(() => {
+              title.textContent = newName;
+              const s = sessions.find(s => s.id === id);
+              if (s) s.display_name = newName;
+            });
+          }
         });
       });
     }
@@ -888,11 +909,14 @@
 
       // Prefer wrist signal (position-based, exercise-agnostic)
       if (poseData.wrist_signal && poseData.wrist_signal.length > 0) {
-        // wrist_signal is normalized 0-1, sampled every 3 frames
-        const sampleRate = poseData.sample_rate || 3;
+        // wrist_signal has one entry per pose-detected frame (NOT per sample_rate)
         const fps = poseData.fps || 30;
-        const idx = Math.floor(t * fps / sampleRate);
-        const clampedIdx = Math.min(idx, poseData.wrist_signal.length - 1);
+        const totalFrames = poseData.wrist_signal.length;
+        const duration = (poseData.frames && poseData.frames.length > 0)
+          ? poseData.frames[poseData.frames.length - 1].t
+          : totalFrames / fps;
+        const idx = Math.floor((t / duration) * totalFrames);
+        const clampedIdx = Math.max(0, Math.min(idx, totalFrames - 1));
         pct = Math.max(0, Math.min(100, poseData.wrist_signal[clampedIdx] * 100));
       } else {
         // Fallback: use elbow angle

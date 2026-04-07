@@ -65,42 +65,73 @@ def serve_video(filename):
 
 @app.route("/api/annotated/<session_id>")
 def serve_annotated(session_id):
-    # Check for generated annotated video
-    path = WEB_DIR / f"{session_id}_annotated.mp4"
-    if path.exists():
-        return send_file(path, conditional=True)
-    # Legacy mappings
-    legacy = {
-        "IMG_6887_bench_press": "bench_annotated.mp4",
-        "IMG_6896_forearm_curl": "forearm_annotated.mp4",
-        "video_bench_press": "video_annotated.mp4",
-        "testK_dumbpress": "dumbpress_annotated.mp4",
-    }
-    fname = legacy.get(session_id)
-    if fname:
-        path = WEB_DIR / fname
+    """Serve annotated video — checks multiple naming patterns."""
+    for pattern in [f"{session_id}_annotated.mp4", f"{session_id}_annotated.mp4"]:
+        path = WEB_DIR / pattern
         if path.exists():
             return send_file(path, conditional=True)
+    # Search for any file containing the session_id and "annotated"
+    for f in WEB_DIR.glob("*annotated*"):
+        if session_id in f.stem or session_id.replace("_bench_press", "") in f.stem:
+            return send_file(f, conditional=True)
     return jsonify({"error": "annotated video not found"}), 404
 
 
 @app.route("/api/poses/<session_id>")
 def serve_poses(session_id):
-    path = WEB_DIR / f"{session_id}_poses.json"
-    if path.exists():
-        return send_file(path)
-    legacy = {
-        "IMG_6887_bench_press": "bench_poses.json",
-        "IMG_6896_forearm_curl": "forearm_poses.json",
-        "video_bench_press": "video_poses.json",
-        "testK_dumbpress": "dumbpress_poses.json",
-    }
-    fname = legacy.get(session_id)
-    if fname:
-        path = WEB_DIR / fname
+    """Serve pose data — checks multiple naming patterns."""
+    for pattern in [f"{session_id}_poses.json", f"{session_id}_poses.json"]:
+        path = WEB_DIR / pattern
         if path.exists():
             return send_file(path)
+    for f in WEB_DIR.glob("*poses*"):
+        if session_id in f.stem or session_id.replace("_bench_press", "") in f.stem:
+            return send_file(f)
     return jsonify({"error": "pose data not found"}), 404
+
+
+@app.route("/api/session/<session_id>/rename", methods=["POST"])
+def rename_session(session_id):
+    """Rename a session (update its display title)."""
+    data = request.json
+    new_name = data.get("name", "").strip()
+    if not new_name:
+        return jsonify({"error": "name required"}), 400
+
+    path = RESULTS_DIR / f"{session_id}.json"
+    if not path.exists():
+        return jsonify({"error": "session not found"}), 404
+
+    with open(path) as f:
+        session = json.load(f)
+
+    session["display_name"] = new_name
+    with open(path, "w") as f:
+        json.dump(session, f, indent=2)
+
+    return jsonify({"ok": True, "name": new_name})
+
+
+@app.route("/api/session/<session_id>/exercise", methods=["POST"])
+def update_exercise(session_id):
+    """Update the exercise type for a session."""
+    data = request.json
+    exercise = data.get("exercise", "").strip()
+    if not exercise:
+        return jsonify({"error": "exercise required"}), 400
+
+    path = RESULTS_DIR / f"{session_id}.json"
+    if not path.exists():
+        return jsonify({"error": "session not found"}), 404
+
+    with open(path) as f:
+        session = json.load(f)
+
+    session["exercise"] = exercise
+    with open(path, "w") as f:
+        json.dump(session, f, indent=2)
+
+    return jsonify({"ok": True, "exercise": exercise})
 
 
 @app.route("/api/analyze", methods=["POST"])
