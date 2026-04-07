@@ -65,28 +65,19 @@ def serve_video(filename):
 
 @app.route("/api/annotated/<session_id>")
 def serve_annotated(session_id):
-    """Serve annotated video — checks multiple naming patterns."""
-    for pattern in [f"{session_id}_annotated.mp4", f"{session_id}_annotated.mp4"]:
-        path = WEB_DIR / pattern
-        if path.exists():
-            return send_file(path, conditional=True)
-    # Search for any file containing the session_id and "annotated"
-    for f in WEB_DIR.glob("*annotated*"):
-        if session_id in f.stem or session_id.replace("_bench_press", "") in f.stem:
-            return send_file(f, conditional=True)
+    """Serve annotated skeleton video. Files are named {session_id}_annotated.mp4."""
+    path = WEB_DIR / f"{session_id}_annotated.mp4"
+    if path.exists():
+        return send_file(path, conditional=True)
     return jsonify({"error": "annotated video not found"}), 404
 
 
 @app.route("/api/poses/<session_id>")
 def serve_poses(session_id):
-    """Serve pose data — checks multiple naming patterns."""
-    for pattern in [f"{session_id}_poses.json", f"{session_id}_poses.json"]:
-        path = WEB_DIR / pattern
-        if path.exists():
-            return send_file(path)
-    for f in WEB_DIR.glob("*poses*"):
-        if session_id in f.stem or session_id.replace("_bench_press", "") in f.stem:
-            return send_file(f)
+    """Serve pose data. Files are named {session_id}_poses.json."""
+    path = WEB_DIR / f"{session_id}_poses.json"
+    if path.exists():
+        return send_file(path)
     return jsonify({"error": "pose data not found"}), 404
 
 

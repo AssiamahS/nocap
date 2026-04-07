@@ -307,6 +307,33 @@ def count_reps_wrist_tracking(landmarks_per_frame, frame_indices, fps):
     peaks = np.array([p for p in peaks if active_mask[p]])
     valleys = np.array([p for p in valleys if active_mask[p]])
 
+    # --- CLUSTER FILTER ---
+    # Real exercise reps come in dense bursts (sets). Noise peaks are scattered.
+    # Find the largest cluster of valleys (bottom of reps) and keep only those.
+    # Only apply on longer videos where noise is likely (>20s with >5 valleys).
+    video_duration = len(smoothed) / max(fps, 1)
+    if len(valleys) > 4 and video_duration > 20:
+        # Cluster valleys: two valleys are in the same cluster if gap < 5 seconds
+        max_gap = fps * 5
+        clusters = []
+        current_cluster = [valleys[0]]
+        for i in range(1, len(valleys)):
+            if valleys[i] - valleys[i-1] <= max_gap:
+                current_cluster.append(valleys[i])
+            else:
+                clusters.append(current_cluster)
+                current_cluster = [valleys[i]]
+        clusters.append(current_cluster)
+
+        # Keep the largest cluster (that's the main exercise set)
+        largest = max(clusters, key=len)
+        if len(largest) >= 2 and len(largest) < len(valleys):
+            valleys = np.array(largest)
+            # Also filter peaks to the same time range
+            start_frame = largest[0] - int(fps * 2)
+            end_frame = largest[-1] + int(fps * 2)
+            peaks = np.array([p for p in peaks if start_frame <= p <= end_frame])
+
     # Count reps as complete peak-valley pairs
     reps_pv = min(len(peaks), len(valleys))
     rep_indices = valleys[:reps_pv].tolist() if len(valleys) >= reps_pv else peaks[:reps_pv].tolist()
