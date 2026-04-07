@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nocap - Rep Counter</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+
+    .header {
+      padding: 20px 24px;
+      border-bottom: 1px solid #1a1a1a;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .header h1 {
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    .header h1 span { color: #ff3b30; }
+
+    .badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: #1a1a1a;
+      color: #888;
+      font-weight: 500;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 24px;
+    }
+
+    @media (max-width: 900px) {
+      .container { grid-template-columns: 1fr; }
+    }
+
+    /* Video Player */
+    .player-wrap {
+      background: #111;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid #1a1a1a;
+    }
+
+    .video-container {
+      position: relative;
+      background: #000;
+      aspect-ratio: 3/4;
+      max-height: 70vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .video-container video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    .rep-flash {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      font-size: 48px;
+      font-weight: 800;
+      color: #ff3b30;
+      opacity: 0;
+      transition: opacity 0.15s;
+      text-shadow: 0 2px 20px rgba(255, 59, 48, 0.5);
+      pointer-events: none;
+    }
+
+    .rep-flash.show {
+      opacity: 1;
+      animation: repPop 0.6s ease-out;
+    }
+
+    @keyframes repPop {
+      0% { transform: scale(1.4); opacity: 1; }
+      100% { transform: scale(1); opacity: 0; }
+    }
+
+    .rep-counter-overlay {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(10px);
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      pointer-events: none;
+    }
+
+    .rep-counter-overlay .count {
+      font-size: 32px;
+      color: #fff;
+      line-height: 1;
+    }
+
+    .rep-counter-overlay .label {
+      font-size: 11px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    /* Timeline */
+    .timeline-section {
+      padding: 16px 20px;
+      border-top: 1px solid #1a1a1a;
+    }
+
+    .timeline-bar {
+      position: relative;
+      height: 40px;
+      background: #1a1a1a;
+      border-radius: 6px;
+      cursor: pointer;
+      overflow: visible;
+    }
+
+    .timeline-progress {
+      height: 100%;
+      background: linear-gradient(90deg, #ff3b30, #ff6b5e);
+      border-radius: 6px;
+      transition: width 0.1s linear;
+      pointer-events: none;
+    }
+
+    .timeline-rep-marker {
+      position: absolute;
+      top: -4px;
+      width: 3px;
+      height: 48px;
+      background: #ffcc00;
+      border-radius: 2px;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    .timeline-rep-marker::after {
+      content: attr(data-rep);
+      position: absolute;
+      top: -18px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffcc00;
+      white-space: nowrap;
+    }
+
+    .timeline-time {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 6px;
+      font-size: 11px;
+      color: #666;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Controls */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      border-top: 1px solid #1a1a1a;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .btn-primary {
+      background: #ff3b30;
+      color: #fff;
+    }
+
+    .btn-primary:hover { background: #e0342a; }
+
+    .btn-ghost {
+      background: #1a1a1a;
+      color: #ccc;
+    }
+
+    .btn-ghost:hover { background: #222; }
+
+    .btn-icon {
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      border-radius: 50%;
+    }
+
+    .speed-select {
+      background: #1a1a1a;
+      color: #ccc;
+      border: none;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .controls .spacer { flex: 1; }
+
+    /* Sidebar */
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .session-list {
+      background: #111;
+      border: 1px solid #1a1a1a;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .session-list-header {
+      padding: 14px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid #1a1a1a;
+    }
+
+    .session-item {
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: background 0.15s;
+      border-bottom: 1px solid #0f0f0f;
+    }
+
+    .session-item:hover { background: #1a1a1a; }
+    .session-item.active { background: #1a1a1a; border-left: 3px solid #ff3b30; }
+
+    .session-item .title {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .session-item .meta {
+      font-size: 12px;
+      color: #666;
+      display: flex;
+      gap: 12px;
+    }
+
+    .session-item .reps-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(255, 59, 48, 0.15);
+      color: #ff6b5e;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 13px;
+    }
+
+    /* Stats Card */
+    .stats-card {
+      background: #111;
+      border: 1px solid #1a1a1a;
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .stats-card h3 {
+      font-size: 13px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      font-size: 13px;
+    }
+
+    .stat-row .label { color: #666; }
+    .stat-row .value { color: #e0e0e0; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    .rep-timeline-list {
+      margin-top: 12px;
+    }
+
+    .rep-timeline-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      font-size: 13px;
+      cursor: pointer;
+      transition: color 0.15s;
+    }
+
+    .rep-timeline-item:hover { color: #ff3b30; }
+
+    .rep-timeline-item .rep-num {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #1a1a1a;
+      border-radius: 50%;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .rep-timeline-item .rep-time {
+      color: #888;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .rep-timeline-item .rep-quality {
+      margin-left: auto;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    .rep-quality.clean { background: rgba(52, 199, 89, 0.15); color: #34c759; }
+    .rep-quality.grinder { background: rgba(255, 204, 0, 0.15); color: #ffcc00; }
+    .rep-quality.half { background: rgba(255, 149, 0, 0.15); color: #ff9500; }
+
+    /* Coach Mode */
+    .coach-section {
+      background: #111;
+      border: 1px solid #1a1a1a;
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .coach-section h3 {
+      font-size: 13px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    .comment-input-wrap {
+      display: flex;
+      gap: 8px;
+    }
+
+    .comment-input {
+      flex: 1;
+      background: #1a1a1a;
+      border: 1px solid #222;
+      color: #e0e0e0;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .comment-input:focus { border-color: #ff3b30; }
+
+    .comment-list {
+      margin-top: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .comment-item {
+      display: flex;
+      gap: 8px;
+      padding: 8px 0;
+      border-bottom: 1px solid #1a1a1a;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .comment-item:hover { color: #ff3b30; }
+
+    .comment-item .time {
+      color: #ff3b30;
+      font-weight: 600;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: #444;
+    }
+
+    .empty-state h2 { font-size: 18px; margin-bottom: 8px; color: #666; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span>no</span>cap</h1>
+    <span class="badge">v1</span>
+  </div>
+
+  <div class="container">
+    <div class="player-wrap" id="playerWrap">
+      <div class="video-container">
+        <video id="video" playsinline></video>
+        <div class="rep-counter-overlay">
+          <div class="label">Reps</div>
+          <div class="count" id="repCount">0</div>
+        </div>
+        <div class="rep-flash" id="repFlash"></div>
+      </div>
+
+      <div class="timeline-section">
+        <div class="timeline-bar" id="timelineBar">
+          <div class="timeline-progress" id="timelineProgress"></div>
+        </div>
+        <div class="timeline-time">
+          <span id="currentTime">0:00</span>
+          <span id="totalTime">0:00</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="btn btn-icon btn-ghost" id="btnRestart" title="Restart">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        </button>
+        <button class="btn btn-icon btn-primary" id="btnPlay" title="Play">
+          <svg id="iconPlay" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+          <svg id="iconPause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>
+        </button>
+        <button class="btn btn-ghost" id="btnPrevRep">&lt; Rep</button>
+        <button class="btn btn-ghost" id="btnNextRep">Rep &gt;</button>
+        <div class="spacer"></div>
+        <select class="speed-select" id="speedSelect">
+          <option value="0.25">0.25x</option>
+          <option value="0.5">0.5x</option>
+          <option value="1" selected>1x</option>
+          <option value="1.5">1.5x</option>
+          <option value="2">2x</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="sidebar">
+      <div class="session-list">
+        <div class="session-list-header">Sessions</div>
+        <div id="sessionList"></div>
+      </div>
+
+      <div class="stats-card" id="statsCard" style="display:none">
+        <h3>Session Details</h3>
+        <div id="statsContent"></div>
+        <div class="rep-timeline-list" id="repTimeline"></div>
+      </div>
+
+      <div class="coach-section" id="coachSection" style="display:none">
+        <h3>Coach Notes</h3>
+        <div class="comment-input-wrap">
+          <input class="comment-input" id="commentInput" placeholder="Add note at current time..." />
+          <button class="btn btn-primary" id="btnAddComment">+</button>
+        </div>
+        <div class="comment-list" id="commentList"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const repCount = document.getElementById('repCount');
+    const repFlash = document.getElementById('repFlash');
+    const timelineBar = document.getElementById('timelineBar');
+    const timelineProgress = document.getElementById('timelineProgress');
+    const currentTimeEl = document.getElementById('currentTime');
+    const totalTimeEl = document.getElementById('totalTime');
+    const sessionListEl = document.getElementById('sessionList');
+    const statsCard = document.getElementById('statsCard');
+    const statsContent = document.getElementById('statsContent');
+    const repTimeline = document.getElementById('repTimeline');
+    const coachSection = document.getElementById('coachSection');
+    const commentList = document.getElementById('commentList');
+
+    let currentSession = null;
+    let sessions = [];
+    let repMarkers = [];
+    let currentRepIdx = 0;
+    let comments = {};  // sessionId -> [{time, text}]
+
+    // Load comments from localStorage
+    try { comments = JSON.parse(localStorage.getItem('nocap_comments') || '{}'); } catch(e) {}
+
+    function formatTime(s) {
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      return `${m}:${sec.toString().padStart(2, '0')}`;
+    }
+
+    function formatExercise(e) {
+      return e.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    }
+
+    // Load sessions
+    async function loadSessions() {
+      const res = await fetch('/api/sessions');
+      sessions = await res.json();
+      renderSessionList();
+      if (sessions.length > 0) loadSession(sessions[0]);
+    }
+
+    function renderSessionList() {
+      sessionListEl.innerHTML = sessions.map((s, i) => `
+        <div class="session-item ${i === 0 ? 'active' : ''}" data-idx="${i}">
+          <div class="title">${formatExercise(s.exercise)}</div>
+          <div class="meta">
+            <span class="reps-badge">${s.reps_counted || s.reps} reps</span>
+            <span>${s.date || ''}</span>
+            <span>${s.duration_sec ? formatTime(s.duration_sec) : ''}</span>
+          </div>
+        </div>
+      `).join('');
+
+      sessionListEl.querySelectorAll('.session-item').forEach(el => {
+        el.addEventListener('click', () => {
+          sessionListEl.querySelectorAll('.session-item').forEach(e => e.classList.remove('active'));
+          el.classList.add('active');
+          loadSession(sessions[parseInt(el.dataset.idx)]);
+        });
+      });
+    }
+
+    function loadSession(session) {
+      currentSession = session;
+      currentRepIdx = 0;
+
+      // Load video
+      const videoFile = session.video || '';
+      video.src = `/api/video/${videoFile}`;
+      video.load();
+
+      // Clear and set rep markers
+      document.querySelectorAll('.timeline-rep-marker').forEach(m => m.remove());
+      repMarkers = session.rep_timestamps_sec || [];
+
+      video.addEventListener('loadedmetadata', () => {
+        totalTimeEl.textContent = formatTime(video.duration);
+        addRepMarkers();
+      }, { once: true });
+
+      // Stats
+      statsCard.style.display = 'block';
+      coachSection.style.display = 'block';
+
+      const repsActual = session.reps_actual;
+      const repQualities = session.rep_quality || [];
+
+      statsContent.innerHTML = `
+        <div class="stat-row"><span class="label">Exercise</span><span class="value">${formatExercise(session.exercise)}</span></div>
+        <div class="stat-row"><span class="label">Reps Detected</span><span class="value">${session.reps_counted || session.reps}</span></div>
+        ${repsActual ? `<div class="stat-row"><span class="label">Reps Actual</span><span class="value">${repsActual}</span></div>` : ''}
+        ${session.equipment ? `<div class="stat-row"><span class="label">Equipment</span><span class="value">${formatExercise(session.equipment)}</span></div>` : ''}
+        ${session.bench_angle ? `<div class="stat-row"><span class="label">Angle</span><span class="value">${session.bench_angle.replace(/_/g, ' ')}</span></div>` : ''}
+        <div class="stat-row"><span class="label">Pose Detection</span><span class="value">${Math.round((session.pose_detection_rate || 0) * 100)}%</span></div>
+        <div class="stat-row"><span class="label">Side Used</span><span class="value">${session.primary_side || '?'}</span></div>
+        <div class="stat-row"><span class="label">Duration</span><span class="value">${formatTime(session.duration_sec || 0)}</span></div>
+      `;
+
+      repTimeline.innerHTML = repMarkers.map((t, i) => {
+        const quality = repQualities[i] || '';
+        return `
+          <div class="rep-timeline-item" data-time="${t}">
+            <span class="rep-num">${i + 1}</span>
+            <span class="rep-time">${formatTime(t)}</span>
+            ${quality ? `<span class="rep-quality ${quality}">${quality}</span>` : ''}
+          </div>
+        `;
+      }).join('');
+
+      repTimeline.querySelectorAll('.rep-timeline-item').forEach(el => {
+        el.addEventListener('click', () => {
+          video.currentTime = parseFloat(el.dataset.time) - 1.5;
+          video.play();
+        });
+      });
+
+      renderComments();
+    }
+
+    function addRepMarkers() {
+      const duration = video.duration || 1;
+      repMarkers.forEach((t, i) => {
+        const marker = document.createElement('div');
+        marker.className = 'timeline-rep-marker';
+        marker.style.left = `${(t / duration) * 100}%`;
+        marker.dataset.rep = `#${i + 1}`;
+        timelineBar.appendChild(marker);
+      });
+    }
+
+    // Video time update
+    video.addEventListener('timeupdate', () => {
+      const pct = (video.currentTime / (video.duration || 1)) * 100;
+      timelineProgress.style.width = `${pct}%`;
+      currentTimeEl.textContent = formatTime(video.currentTime);
+
+      // Count reps up to current time
+      const repsNow = repMarkers.filter(t => video.currentTime >= t).length;
+      if (parseInt(repCount.textContent) !== repsNow && repsNow > parseInt(repCount.textContent)) {
+        repFlash.textContent = repsNow;
+        repFlash.classList.remove('show');
+        void repFlash.offsetWidth;
+        repFlash.classList.add('show');
+      }
+      repCount.textContent = repsNow;
+    });
+
+    // Timeline click to scrub
+    timelineBar.addEventListener('click', (e) => {
+      const rect = timelineBar.getBoundingClientRect();
+      const pct = (e.clientX - rect.left) / rect.width;
+      video.currentTime = pct * video.duration;
+    });
+
+    // Dragging on timeline
+    let dragging = false;
+    timelineBar.addEventListener('mousedown', (e) => { dragging = true; });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const rect = timelineBar.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      video.currentTime = pct * video.duration;
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+
+    // Play/Pause
+    document.getElementById('btnPlay').addEventListener('click', () => {
+      if (video.paused) video.play(); else video.pause();
+    });
+
+    video.addEventListener('play', () => {
+      document.getElementById('iconPlay').style.display = 'none';
+      document.getElementById('iconPause').style.display = '';
+    });
+
+    video.addEventListener('pause', () => {
+      document.getElementById('iconPlay').style.display = '';
+      document.getElementById('iconPause').style.display = 'none';
+    });
+
+    // Restart
+    document.getElementById('btnRestart').addEventListener('click', () => {
+      video.currentTime = 0;
+      video.play();
+    });
+
+    // Speed
+    document.getElementById('speedSelect').addEventListener('change', (e) => {
+      video.playbackRate = parseFloat(e.target.value);
+    });
+
+    // Rep navigation
+    document.getElementById('btnPrevRep').addEventListener('click', () => {
+      if (repMarkers.length === 0) return;
+      // Find the rep before current time
+      let idx = repMarkers.findIndex(t => t > video.currentTime - 0.5) - 1;
+      if (idx < 0) idx = 0;
+      video.currentTime = Math.max(0, repMarkers[idx] - 1.5);
+    });
+
+    document.getElementById('btnNextRep').addEventListener('click', () => {
+      if (repMarkers.length === 0) return;
+      let idx = repMarkers.findIndex(t => t > video.currentTime + 0.5);
+      if (idx < 0) idx = repMarkers.length - 1;
+      video.currentTime = Math.max(0, repMarkers[idx] - 1.5);
+    });
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      if (e.code === 'Space') { e.preventDefault(); if (video.paused) video.play(); else video.pause(); }
+      if (e.code === 'ArrowLeft') { video.currentTime -= 2; }
+      if (e.code === 'ArrowRight') { video.currentTime += 2; }
+      if (e.code === 'KeyR') { video.currentTime = 0; video.play(); }
+    });
+
+    // Coach comments
+    function renderComments() {
+      if (!currentSession) return;
+      const id = currentSession.id;
+      const list = comments[id] || [];
+      commentList.innerHTML = list
+        .sort((a, b) => a.time - b.time)
+        .map((c, i) => `
+          <div class="comment-item" data-time="${c.time}" data-idx="${i}">
+            <span class="time">${formatTime(c.time)}</span>
+            <span>${c.text}</span>
+          </div>
+        `).join('');
+
+      commentList.querySelectorAll('.comment-item').forEach(el => {
+        el.addEventListener('click', () => {
+          video.currentTime = parseFloat(el.dataset.time);
+        });
+      });
+    }
+
+    document.getElementById('btnAddComment').addEventListener('click', addComment);
+    document.getElementById('commentInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') addComment();
+    });
+
+    function addComment() {
+      const input = document.getElementById('commentInput');
+      const text = input.value.trim();
+      if (!text || !currentSession) return;
+
+      const id = currentSession.id;
+      if (!comments[id]) comments[id] = [];
+      comments[id].push({ time: video.currentTime, text });
+      localStorage.setItem('nocap_comments', JSON.stringify(comments));
+      input.value = '';
+      renderComments();
+    }
+
+    // Init
+    loadSessions();
+  </script>
+</body>
+</html>
