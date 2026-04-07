@@ -267,14 +267,48 @@ def count_reps_wrist_tracking(landmarks_per_frame, frame_indices, fps):
     smoothed = np.convolve(sig, kernel, mode='same')
     sig_range = np.max(smoothed) - np.min(smoothed)
 
-    # Use peak detection to count full cycles
+    # --- SET DETECTION: Only count reps during actual exercise sets ---
+    # Use sliding window amplitude to find "active" periods.
+    # Talking, walking, adjusting weights = low amplitude.
+    # Actual reps = high amplitude rhythmic motion.
+    window_size = int(fps * 2)  # 2-second sliding window
+    if window_size < 10:
+        window_size = 10
+
+    amplitudes = np.zeros(len(smoothed))
+    for i in range(len(smoothed)):
+        start = max(0, i - window_size // 2)
+        end = min(len(smoothed), i + window_size // 2)
+        segment = smoothed[start:end]
+        amplitudes[i] = np.max(segment) - np.min(segment)
+
+    # Set detection: filter out talking/setup/walking noise.
+    # Only count reps during periods of large rhythmic motion.
+    peak_amplitude = np.percentile(amplitudes, 90)
+    active_threshold = peak_amplitude * 0.35
+
+    # Count what fraction of the video is "active"
+    active_frames = np.sum(amplitudes >= active_threshold)
+    active_fraction = active_frames / len(amplitudes)
+
+    if active_fraction > 0.6:
+        # Most of the video is exercise — don't filter (clean/trimmed clip)
+        active_mask = np.ones(len(smoothed), dtype=bool)
+    else:
+        # Mixed video (talking + exercise) — only keep active regions
+        active_mask = amplitudes >= active_threshold
+
+    # Find peaks/valleys only in active regions
     prominence = sig_range * 0.15
     peaks, _ = find_peaks(smoothed, prominence=prominence, distance=8)
     valleys, _ = find_peaks(-smoothed, prominence=prominence, distance=8)
 
-    # Count reps as complete peak-valley-peak OR valley-peak-valley cycles
-    # Whichever gives more reps
-    reps_pv = min(len(peaks), len(valleys))  # peak-valley pairs
+    # Filter: only keep peaks/valleys in active regions
+    peaks = np.array([p for p in peaks if active_mask[p]])
+    valleys = np.array([p for p in valleys if active_mask[p]])
+
+    # Count reps as complete peak-valley pairs
+    reps_pv = min(len(peaks), len(valleys))
     rep_indices = valleys[:reps_pv].tolist() if len(valleys) >= reps_pv else peaks[:reps_pv].tolist()
 
     # Normalize signal to 0-1 for the meter
@@ -449,28 +483,21 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
         print(f"Wrist tracking: {axis_info['axis']} axis, {axis_info['n_peaks']} peaks, {axis_info['n_valleys']} valleys")
         print(f"  Angle-based: {rep_count_angle} reps | Wrist-based: {rep_count_wrist} reps")
 
-    # Pick the best method:
-    # - If both agree (within 1), use wrist (more universal)
-    # - If wrist is slightly higher, trust wrist (angle often undercounts)
-    # - If wrist is way higher (>50% more), it's likely counting noise — use angle
-    # - If angle is higher, use angle (wrist may have missed motion axis)
+    # Wrist tracking has set detection (filters out talking/setup noise).
+    # Angle tracking does NOT have set detection, so it overcounts on videos
+    # with non-exercise movement.
+    # Default to wrist tracking when available — it's more universal and
+    # has better noise filtering. Only fall back to angle if wrist detected 0.
     if rep_count_wrist > 0 and axis_info:
-        ratio = rep_count_wrist / max(rep_count_angle, 1)
-        if ratio <= 1.5 and rep_count_wrist >= rep_count_angle:
-            rep_count = rep_count_wrist
-            rep_indices_final = peak_indices_wrist
-            method = "wrist_position"
-            print(f"  -> Using WRIST tracking ({rep_count} reps)")
-        else:
-            rep_count = rep_count_angle
-            rep_indices_final = peak_indices_angle
-            method = "elbow_angle"
-            print(f"  -> Using ANGLE tracking ({rep_count} reps, wrist ratio {ratio:.1f}x too high)")
+        rep_count = rep_count_wrist
+        rep_indices_final = peak_indices_wrist
+        method = "wrist_position"
+        print(f"  -> Using WRIST tracking ({rep_count} reps)")
     else:
         rep_count = rep_count_angle
         rep_indices_final = peak_indices_angle
         method = "elbow_angle"
-        print(f"  -> Using ANGLE tracking ({rep_count} reps)")
+        print(f"  -> Using ANGLE tracking ({rep_count} reps, no wrist signal)")
 
     rep_timestamps = []
     for pi in rep_indices_final:
