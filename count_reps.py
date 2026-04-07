@@ -54,8 +54,9 @@ def detect_exercise_start(angles, window=15, threshold=5.0):
 def count_reps_from_angles(angles, exercise="bench_press"):
     """Count reps using a state machine that requires full rep cycles.
 
-    A rep = lockout (high angle) -> bottom (low angle) -> lockout (high angle).
-    This prevents counting setup/unrack, partial movements, and post-rack noise.
+    A rep = extended (high angle) -> contracted (low angle) -> extended (high angle).
+    Handles edge cases: video starts mid-rep, last rep cut off by video end.
+    Only counts reps where both the contraction and extension are fully visible.
     """
     if len(angles) < 10:
         return 0, [], []
@@ -67,71 +68,82 @@ def count_reps_from_angles(angles, exercise="bench_press"):
     if angle_range < 15:
         return 0, [], []
 
-    # Exercise-specific thresholds
+    # Dynamic thresholds from signal percentiles, with exercise-specific bounds.
+    p10 = np.percentile(smoothed, 10)
+    p50 = np.percentile(smoothed, 50)
+    p90 = np.percentile(smoothed, 90)
+
     if exercise == "bench_press":
-        lockout_threshold = 100   # Above this = locked out
-        bottom_threshold = 70     # Below this = bottom of rep
-        min_rep_frames = 10       # Minimum frames for a rep
+        # Bench: extended ~100-160°, contracted ~40-90°
+        extended_threshold = min(max(p50 + (p90 - p50) * 0.3, 90), 130)
+        contracted_threshold = min(max(p10 + (p50 - p10) * 0.3, 40), 80)
+        min_transition_frames = 10
     elif exercise == "forearm_curl":
-        lockout_threshold = 120
-        bottom_threshold = 80
-        min_rep_frames = 8
+        # Curl: extended ~130-170°, contracted ~50-90°
+        extended_threshold = min(max(p50 + (p90 - p50) * 0.3, 110), 150)
+        contracted_threshold = min(max(p10 + (p50 - p10) * 0.3, 50), 100)
+        min_transition_frames = 6
     else:  # push_up
-        lockout_threshold = 150
-        bottom_threshold = 100
-        min_rep_frames = 12
-
-    # Dynamic threshold: use percentiles of the actual signal
-    p25 = np.percentile(smoothed, 25)
-    p75 = np.percentile(smoothed, 75)
-    midpoint = (p25 + p75) / 2
-
-    # Adjust thresholds based on actual data
-    lockout_threshold = max(lockout_threshold, midpoint + (p75 - p25) * 0.3)
-    bottom_threshold = min(bottom_threshold, midpoint - (p75 - p25) * 0.1)
+        extended_threshold = min(max(p50 + (p90 - p50) * 0.3, 140), 165)
+        contracted_threshold = min(max(p10 + (p50 - p10) * 0.3, 80), 120)
+        min_transition_frames = 10
 
     # State machine
-    STATE_WAITING_LOCKOUT = 0  # Waiting for first lockout
-    STATE_LOCKED_OUT = 1       # At top, waiting to go down
-    STATE_AT_BOTTOM = 2        # At bottom, waiting to come back up
+    STATE_SEEKING_EXTENDED = 0   # Looking for first full extension
+    STATE_EXTENDED = 1           # At top/extended, waiting to contract
+    STATE_CONTRACTED = 2         # At bottom/contracted, waiting to extend
 
-    state = STATE_WAITING_LOCKOUT
+    state = STATE_SEEKING_EXTENDED
     reps = 0
     rep_indices = []
-    last_lockout_idx = 0
-    bottom_idx = 0
+    last_extended_idx = 0
+    contracted_idx = 0
 
     for i, angle in enumerate(smoothed):
-        if state == STATE_WAITING_LOCKOUT:
-            if angle >= lockout_threshold:
-                state = STATE_LOCKED_OUT
-                last_lockout_idx = i
+        if state == STATE_SEEKING_EXTENDED:
+            if angle >= extended_threshold:
+                state = STATE_EXTENDED
+                last_extended_idx = i
 
-        elif state == STATE_LOCKED_OUT:
-            if angle <= bottom_threshold and (i - last_lockout_idx) >= min_rep_frames:
-                state = STATE_AT_BOTTOM
-                bottom_idx = i
+        elif state == STATE_EXTENDED:
+            # Two ways to detect contraction:
+            # 1. Absolute: angle drops below contracted_threshold
+            # 2. Relative: angle drops by at least 30% of the range from last extension
+            #    (handles grinder reps that don't go as deep)
+            last_ext_angle = smoothed[last_extended_idx]
+            relative_drop = last_ext_angle - angle
+            min_relative_drop = (extended_threshold - contracted_threshold) * 0.4
 
-        elif state == STATE_AT_BOTTOM:
-            if angle >= lockout_threshold and (i - bottom_idx) >= min_rep_frames:
-                # Full rep completed: lockout -> bottom -> lockout
-                reps += 1
-                rep_indices.append(bottom_idx)
-                state = STATE_LOCKED_OUT
-                last_lockout_idx = i
+            is_contracted = (angle <= contracted_threshold) or (relative_drop >= min_relative_drop)
 
-    # Check if there's an incomplete rep at the end (like racking counts as lockout)
-    # If we're at bottom and the angle goes up significantly but maybe not to full lockout
-    if state == STATE_AT_BOTTOM:
-        remaining = smoothed[bottom_idx:]
+            if is_contracted and (i - last_extended_idx) >= min_transition_frames:
+                state = STATE_CONTRACTED
+                contracted_idx = i
+
+        elif state == STATE_CONTRACTED:
+            if angle >= extended_threshold and (i - contracted_idx) >= min_transition_frames:
+                # Full rep completed: extended -> contracted -> extended
+                # Enforce minimum total rep time (extension -> contraction -> extension)
+                total_rep_frames = i - last_extended_idx
+                min_total_rep_frames = min_transition_frames * 3  # ~1 second minimum
+                if total_rep_frames >= min_total_rep_frames:
+                    reps += 1
+                    rep_indices.append(contracted_idx)
+                state = STATE_EXTENDED
+                last_extended_idx = i
+
+    # Handle incomplete final rep (e.g., racking the bar or video ends mid-recovery).
+    # Only count if we saw significant recovery (>= 50% of the way back to extension).
+    # Do NOT count if video just cuts off at the bottom — that rep isn't confirmed.
+    if state == STATE_CONTRACTED:
+        remaining = smoothed[contracted_idx:]
         if len(remaining) > 5:
-            max_after_bottom = np.max(remaining)
-            # If it came back up at least 60% of the way to lockout, count it
-            recovery = max_after_bottom - smoothed[bottom_idx]
-            needed = lockout_threshold - smoothed[bottom_idx]
+            max_after = np.max(remaining)
+            recovery = max_after - smoothed[contracted_idx]
+            needed = extended_threshold - smoothed[contracted_idx]
             if needed > 0 and recovery / needed >= 0.5:
                 reps += 1
-                rep_indices.append(bottom_idx)
+                rep_indices.append(contracted_idx)
 
     return reps, rep_indices, smoothed.tolist()
 
