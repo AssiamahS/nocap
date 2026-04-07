@@ -3,6 +3,9 @@
 
 import json
 import os
+import re
+import shutil
+import uuid
 from pathlib import Path
 from flask import Flask, send_from_directory, jsonify, request, send_file
 import subprocess
@@ -13,6 +16,9 @@ app = Flask(__name__, static_folder="web")
 DATA_DIR = Path(os.environ.get("NOCAP_DATA", Path.home() / "nocap-data"))
 RESULTS_DIR = DATA_DIR / "results"
 VIDEOS_DIR = Path(os.environ.get("NOCAP_VIDEOS", Path.home() / "Downloads"))
+WEB_DIR = Path(__file__).parent / "web"
+DOWNLOADS_DIR = Path(__file__).parent / "videos"
+DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 
 @app.route("/")
@@ -27,7 +33,6 @@ def static_files(filename):
 
 @app.route("/api/sessions")
 def list_sessions():
-    """List all analyzed sessions with their results."""
     sessions = []
     if RESULTS_DIR.exists():
         for f in sorted(RESULTS_DIR.glob("*.json")):
@@ -40,7 +45,6 @@ def list_sessions():
 
 @app.route("/api/session/<session_id>")
 def get_session(session_id):
-    """Get a single session's results."""
     path = RESULTS_DIR / f"{session_id}.json"
     if not path.exists():
         return jsonify({"error": "not found"}), 404
@@ -50,10 +54,9 @@ def get_session(session_id):
     return jsonify(data)
 
 
-@app.route("/api/video/<filename>")
+@app.route("/api/video/<path:filename>")
 def serve_video(filename):
-    """Serve a video file with range request support."""
-    for base in [VIDEOS_DIR, DATA_DIR / "videos", Path.home() / "Downloads"]:
+    for base in [DOWNLOADS_DIR, VIDEOS_DIR, DATA_DIR / "videos", Path.home() / "Downloads"]:
         path = base / filename
         if path.exists():
             return send_file(path, conditional=True)
@@ -62,18 +65,20 @@ def serve_video(filename):
 
 @app.route("/api/annotated/<session_id>")
 def serve_annotated(session_id):
-    """Serve the annotated (skeleton overlay) video for a session."""
-    # Map session IDs to annotated video files
-    web_dir = Path(__file__).parent / "web"
-    mappings = {
+    # Check for generated annotated video
+    path = WEB_DIR / f"{session_id}_annotated.mp4"
+    if path.exists():
+        return send_file(path, conditional=True)
+    # Legacy mappings
+    legacy = {
         "IMG_6887_bench_press": "bench_annotated.mp4",
         "IMG_6896_forearm_curl": "forearm_annotated.mp4",
         "video_bench_press": "video_annotated.mp4",
         "testK_dumbpress": "dumbpress_annotated.mp4",
     }
-    fname = mappings.get(session_id)
+    fname = legacy.get(session_id)
     if fname:
-        path = web_dir / fname
+        path = WEB_DIR / fname
         if path.exists():
             return send_file(path, conditional=True)
     return jsonify({"error": "annotated video not found"}), 404
@@ -81,17 +86,18 @@ def serve_annotated(session_id):
 
 @app.route("/api/poses/<session_id>")
 def serve_poses(session_id):
-    """Serve 3D pose data for a session."""
-    web_dir = Path(__file__).parent / "web"
-    mappings = {
+    path = WEB_DIR / f"{session_id}_poses.json"
+    if path.exists():
+        return send_file(path)
+    legacy = {
         "IMG_6887_bench_press": "bench_poses.json",
         "IMG_6896_forearm_curl": "forearm_poses.json",
         "video_bench_press": "video_poses.json",
         "testK_dumbpress": "dumbpress_poses.json",
     }
-    fname = mappings.get(session_id)
+    fname = legacy.get(session_id)
     if fname:
-        path = web_dir / fname
+        path = WEB_DIR / fname
         if path.exists():
             return send_file(path)
     return jsonify({"error": "pose data not found"}), 404
@@ -99,27 +105,115 @@ def serve_poses(session_id):
 
 @app.route("/api/analyze", methods=["POST"])
 def analyze_video():
-    """Run rep counter on a video."""
+    """Run rep counter on a video file or URL."""
     data = request.json
+    url = data.get("url")
     video_path = data.get("video_path")
     exercise = data.get("exercise", "bench_press")
 
-    if not video_path or not Path(video_path).exists():
-        return jsonify({"error": "video not found"}), 400
+    # Download from URL if provided
+    if url:
+        try:
+            result = download_video(url)
+            video_path = result["path"]
+            title = result["title"]
+        except Exception as e:
+            return jsonify({"error": f"Download failed: {str(e)}"}), 400
+    elif not video_path or not Path(video_path).exists():
+        return jsonify({"error": "No video_path or url provided"}), 400
+    else:
+        title = Path(video_path).stem
 
-    result = subprocess.run(
-        [sys.executable, "count_reps.py", video_path, "-e", exercise, "--json"],
+    # Make a safe session ID
+    safe_title = re.sub(r'[^a-zA-Z0-9_-]', '_', title)[:50]
+    session_id = f"{safe_title}_{exercise}"
+
+    # Run rep counter with annotated output + pose data
+    annotated_path = str(WEB_DIR / f"{session_id}_annotated.mp4")
+    poses_path = str(WEB_DIR / f"{session_id}_poses.json")
+
+    proc = subprocess.run(
+        [sys.executable, "count_reps.py", video_path, "-e", exercise,
+         "-o", annotated_path, "-p", poses_path, "--json"],
         capture_output=True, text=True, cwd=Path(__file__).parent,
+        timeout=600,
     )
 
-    if result.returncode != 0:
-        return jsonify({"error": result.stderr}), 500
+    if proc.returncode != 0:
+        return jsonify({"error": proc.stderr[-500:]}), 500
 
-    # Parse JSON from output (it's after the text output)
-    lines = result.stdout.strip().split("\n")
-    json_start = next(i for i, l in enumerate(lines) if l.strip().startswith("{"))
+    # Parse JSON result
+    lines = proc.stdout.strip().split("\n")
+    json_start = next((i for i, l in enumerate(lines) if l.strip().startswith("{")), None)
+    if json_start is None:
+        return jsonify({"error": "No JSON output from counter"}), 500
+
     json_str = "\n".join(lines[json_start:])
-    return jsonify(json.loads(json_str))
+    result = json.loads(json_str)
+
+    # Copy video to local videos dir if it's not already there
+    local_video = DOWNLOADS_DIR / Path(video_path).name
+    if not local_video.exists():
+        shutil.copy2(video_path, local_video)
+
+    # Save session results
+    session_data = {
+        "video": Path(video_path).name,
+        "exercise": exercise,
+        "reps_counted": result["reps"],
+        "reps_actual": None,
+        "rep_timestamps_sec": result["rep_timestamps_sec"],
+        "duration_sec": result["duration_sec"],
+        "fps": result["fps"],
+        "total_frames": result["total_frames"],
+        "pose_detection_rate": result["pose_detection_rate"],
+        "primary_side": result["primary_side"],
+        "angle_range_deg": result["angle_range_deg"],
+        "exercise_start_sec": result.get("exercise_start_sec", 0),
+        "date": "2026-04-07",
+        "source": url or video_path,
+    }
+
+    results_path = RESULTS_DIR / f"{session_id}.json"
+    with open(results_path, "w") as f:
+        json.dump(session_data, f, indent=2)
+
+    session_data["id"] = session_id
+    return jsonify(session_data)
+
+
+def download_video(url):
+    """Download video from URL using yt-dlp."""
+    output_template = str(DOWNLOADS_DIR / "%(title)s.%(ext)s")
+
+    proc = subprocess.run(
+        ["yt-dlp",
+         "--no-playlist",
+         "-f", "best[height<=720]",  # Cap at 720p to keep processing fast
+         "-o", output_template,
+         "--print", "after_move:filepath",
+         "--print", "%(title)s",
+         url],
+        capture_output=True, text=True, timeout=120,
+    )
+
+    if proc.returncode != 0:
+        raise Exception(proc.stderr[-300:])
+
+    lines = proc.stdout.strip().split("\n")
+    # Last two lines: filepath, title
+    filepath = lines[-2] if len(lines) >= 2 else lines[-1]
+    title = lines[-1] if len(lines) >= 2 else Path(filepath).stem
+
+    if not Path(filepath).exists():
+        # yt-dlp may have already downloaded it
+        # Try to find the file
+        for f in DOWNLOADS_DIR.glob("*"):
+            if f.is_file() and f.suffix in ('.mp4', '.webm', '.mkv'):
+                filepath = str(f)
+                break
+
+    return {"path": filepath, "title": title}
 
 
 if __name__ == "__main__":

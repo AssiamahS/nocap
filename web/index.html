@@ -310,13 +310,128 @@
 
     .comment-item:hover { color: #ff3b30; }
     .comment-item .time { color: #ff3b30; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+    /* URL Input */
+    .url-bar {
+      display: flex;
+      gap: 8px;
+      padding: 12px 20px;
+      background: #0d0d0d;
+      border-bottom: 1px solid #1a1a1a;
+    }
+
+    .url-input {
+      flex: 1;
+      background: #1a1a1a;
+      border: 1px solid #222;
+      color: #e0e0e0;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .url-input:focus { border-color: #ff3b30; }
+    .url-input::placeholder { color: #555; }
+
+    .exercise-select {
+      background: #1a1a1a;
+      border: 1px solid #222;
+      color: #ccc;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .btn-analyze {
+      background: #ff3b30;
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+
+    .btn-analyze:hover { background: #e0342a; }
+    .btn-analyze:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .analyze-status {
+      font-size: 12px;
+      color: #888;
+      padding: 4px 20px;
+      display: none;
+    }
+
+    .analyze-status.show { display: block; }
+    .analyze-status.error { color: #ff3b30; }
+
+    /* Rep Height Meter */
+    .rep-meter {
+      position: absolute;
+      right: 60px;
+      top: 16px;
+      bottom: 16px;
+      width: 30px;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(10px);
+      border-radius: 15px;
+      border: 1px solid #333;
+      overflow: hidden;
+      pointer-events: none;
+      display: none;
+    }
+
+    .rep-meter.active { display: block; }
+
+    .rep-meter-fill {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: linear-gradient(to top, #ff3b30, #ff6b5e, #34c759);
+      border-radius: 0 0 14px 14px;
+      transition: height 0.1s ease-out;
+    }
+
+    .rep-meter-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: #ffcc00;
+      z-index: 2;
+    }
+
+    .rep-meter-label {
+      position: absolute;
+      left: -30px;
+      font-size: 8px;
+      color: #ffcc00;
+      transform: translateY(-50%);
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <h1><span>no</span>cap</h1>
-    <span class="badge">v1.1</span>
+    <span class="badge">v1.4</span>
   </div>
+
+  <div class="url-bar">
+    <input class="url-input" id="urlInput" placeholder="Paste TikTok, YouTube, or Instagram URL..." />
+    <select class="exercise-select" id="exerciseSelect">
+      <option value="bench_press">Bench Press</option>
+      <option value="push_up">Push Ups</option>
+      <option value="forearm_curl">Forearm Curl</option>
+    </select>
+    <button class="btn-analyze" id="btnAnalyze">Count Reps</button>
+  </div>
+  <div class="analyze-status" id="analyzeStatus"></div>
 
   <div class="container">
     <div class="player-wrap">
@@ -328,6 +443,12 @@
         </div>
         <div class="rep-flash" id="repFlash"></div>
         <button class="skeleton-toggle" id="btnSkeleton" title="Toggle skeleton overlay">Skeleton</button>
+        <div class="rep-meter" id="repMeter">
+          <div class="rep-meter-fill" id="repMeterFill"></div>
+          <div class="rep-meter-line" id="repMeterLine" style="bottom: 70%">
+            <span class="rep-meter-label">REP</span>
+          </div>
+        </div>
       </div>
 
       <div class="timeline-section">
@@ -509,6 +630,9 @@
       });
 
       renderComments();
+
+      // Load pose data for rep meter
+      loadPoseData(session.id);
     }
 
     // ---- Skeleton toggle ----
@@ -673,6 +797,117 @@
 
     document.getElementById('btnAddComment').addEventListener('click', addComment);
     document.getElementById('commentInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') addComment(); });
+
+    // ---- URL Analyze ----
+    const btnAnalyze = document.getElementById('btnAnalyze');
+    const urlInput = document.getElementById('urlInput');
+    const analyzeStatus = document.getElementById('analyzeStatus');
+
+    btnAnalyze.addEventListener('click', analyzeUrl);
+    urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') analyzeUrl(); });
+
+    async function analyzeUrl() {
+      const url = urlInput.value.trim();
+      if (!url) return;
+
+      const exercise = document.getElementById('exerciseSelect').value;
+      btnAnalyze.disabled = true;
+      btnAnalyze.textContent = 'Downloading...';
+      analyzeStatus.textContent = 'Downloading video and counting reps...';
+      analyzeStatus.className = 'analyze-status show';
+
+      try {
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, exercise }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          analyzeStatus.textContent = `Error: ${data.error}`;
+          analyzeStatus.className = 'analyze-status show error';
+          return;
+        }
+
+        analyzeStatus.textContent = `Done! ${data.reps_counted} reps detected.`;
+        analyzeStatus.className = 'analyze-status show';
+
+        // Reload sessions and select the new one
+        sessions = await (await fetch('/api/sessions')).json();
+        renderSessionList();
+        const newIdx = sessions.findIndex(s => s.id === data.id);
+        if (newIdx >= 0) {
+          loadSession(sessions[newIdx], newIdx);
+        }
+
+        urlInput.value = '';
+        setTimeout(() => { analyzeStatus.className = 'analyze-status'; }, 5000);
+
+      } catch (e) {
+        analyzeStatus.textContent = `Error: ${e.message}`;
+        analyzeStatus.className = 'analyze-status show error';
+      } finally {
+        btnAnalyze.disabled = false;
+        btnAnalyze.textContent = 'Count Reps';
+      }
+    }
+
+    // ---- Rep Height Meter ----
+    const repMeter = document.getElementById('repMeter');
+    const repMeterFill = document.getElementById('repMeterFill');
+    let poseData = null;
+
+    async function loadPoseData(sessionId) {
+      try {
+        const res = await fetch(`/api/poses/${sessionId}`);
+        if (res.ok) {
+          poseData = await res.json();
+          repMeter.classList.add('active');
+        } else {
+          poseData = null;
+          repMeter.classList.remove('active');
+        }
+      } catch (e) {
+        poseData = null;
+        repMeter.classList.remove('active');
+      }
+    }
+
+    // Update meter based on current video time
+    function updateRepMeter() {
+      if (!poseData || !poseData.frames || poseData.frames.length === 0) return;
+
+      const t = video.currentTime;
+      // Find closest pose frame
+      let closest = poseData.frames[0];
+      for (const f of poseData.frames) {
+        if (f.t <= t) closest = f;
+        else break;
+      }
+
+      // Use the primary side angle — pick whichever is higher (camera-facing)
+      const angle = Math.max(closest.la, closest.ra);
+
+      // Normalize to 0-100% (0° = fully contracted at bottom, 180° = fully extended at top)
+      const pct = Math.min(100, Math.max(0, (angle / 180) * 100));
+      repMeterFill.style.height = `${pct}%`;
+
+      // Color: green when extended (high), red when contracted (low)
+      if (pct > 70) {
+        repMeterFill.style.background = 'linear-gradient(to top, #34c759, #30d158)';
+      } else if (pct > 40) {
+        repMeterFill.style.background = 'linear-gradient(to top, #ffcc00, #ff9500)';
+      } else {
+        repMeterFill.style.background = 'linear-gradient(to top, #ff3b30, #ff6b5e)';
+      }
+
+      requestAnimationFrame(updateRepMeter);
+    }
+
+    // Start meter animation when video plays
+    video.addEventListener('play', () => { if (poseData) requestAnimationFrame(updateRepMeter); });
 
     // ---- Init ----
     loadSessions();
