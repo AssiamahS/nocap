@@ -373,13 +373,13 @@
     /* Rep Height Meter */
     .rep-meter {
       position: absolute;
-      right: 60px;
-      top: 16px;
+      right: 16px;
+      top: 60px;
       bottom: 16px;
-      width: 30px;
-      background: rgba(0,0,0,0.6);
-      backdrop-filter: blur(10px);
-      border-radius: 15px;
+      width: 36px;
+      background: rgba(0,0,0,0.7);
+      backdrop-filter: blur(12px);
+      border-radius: 18px;
       border: 1px solid #333;
       overflow: hidden;
       pointer-events: none;
@@ -388,38 +388,60 @@
 
     .rep-meter.active { display: block; }
 
+    .rep-meter-track {
+      position: absolute;
+      top: 8px;
+      bottom: 8px;
+      left: 6px;
+      right: 6px;
+      border-radius: 12px;
+      background: #1a1a1a;
+      overflow: hidden;
+    }
+
     .rep-meter-fill {
       position: absolute;
       bottom: 0;
       left: 0;
       right: 0;
-      background: linear-gradient(to top, #ff3b30, #ff6b5e, #34c759);
-      border-radius: 0 0 14px 14px;
-      transition: height 0.1s ease-out;
+      border-radius: 0 0 12px 12px;
+      transition: height 0.08s linear;
     }
 
-    .rep-meter-line {
+    .rep-meter-peak {
+      position: absolute;
+      left: 2px;
+      right: 2px;
+      height: 2px;
+      background: #ffcc00;
+      border-radius: 1px;
+      z-index: 3;
+      opacity: 0.8;
+      transition: bottom 0.3s ease-out;
+    }
+
+    .rep-meter-label-top,
+    .rep-meter-label-bot {
       position: absolute;
       left: 0;
       right: 0;
-      height: 2px;
-      background: #ffcc00;
-      z-index: 2;
+      text-align: center;
+      font-size: 7px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      pointer-events: none;
+      z-index: 4;
     }
 
-    .rep-meter-label {
-      position: absolute;
-      left: -30px;
-      font-size: 8px;
-      color: #ffcc00;
-      transform: translateY(-50%);
-    }
+    .rep-meter-label-top { top: 2px; color: #34c759; }
+    .rep-meter-label-bot { bottom: 1px; color: #ff3b30; }
   </style>
 </head>
 <body>
   <div class="header">
     <h1><span>no</span>cap</h1>
-    <span class="badge">v1.4</span>
+    <span class="badge">v1.7</span>
   </div>
 
   <div class="url-bar">
@@ -445,10 +467,12 @@
         <div class="rep-flash" id="repFlash"></div>
         <button class="skeleton-toggle" id="btnSkeleton" title="Toggle skeleton overlay">Skeleton</button>
         <div class="rep-meter" id="repMeter">
-          <div class="rep-meter-fill" id="repMeterFill"></div>
-          <div class="rep-meter-line" id="repMeterLine" style="bottom: 70%">
-            <span class="rep-meter-label">REP</span>
+          <span class="rep-meter-label-top">UP</span>
+          <div class="rep-meter-track">
+            <div class="rep-meter-fill" id="repMeterFill"></div>
+            <div class="rep-meter-peak" id="repMeterPeak"></div>
           </div>
+          <span class="rep-meter-label-bot">DN</span>
         </div>
       </div>
 
@@ -686,6 +710,9 @@
       showSkeleton = !showSkeleton;
       btnSkeleton.classList.toggle('active', showSkeleton);
       btnSkeleton.textContent = showSkeleton ? 'Skeleton ON' : 'Skeleton';
+      // Hide rep counter overlay when skeleton video is showing (it has its own angle info)
+      document.querySelector('.rep-counter-overlay').style.display = showSkeleton ? 'none' : '';
+      document.getElementById('repMeter').style.display = showSkeleton ? 'none' : '';
       if (currentSession) {
         const wasPlaying = !video.paused;
         const curTime = video.currentTime;
@@ -800,7 +827,7 @@
       for (let i = 0; i < repMarkers.length; i++) {
         if (repMarkers[i] > cur + 0.5) { target = i; break; }
       }
-      if (target < 0) target = repMarkers.length - 1;
+      if (target < 0) return; // No future rep, do nothing
       video.currentTime = Math.max(0, repMarkers[target] - 2);
     });
 
@@ -903,14 +930,18 @@
     // ---- Rep Height Meter ----
     const repMeter = document.getElementById('repMeter');
     const repMeterFill = document.getElementById('repMeterFill');
+    const repMeterPeak = document.getElementById('repMeterPeak');
     let poseData = null;
+    let meterPeakPct = 0;
+    let meterAnimating = false;
 
     async function loadPoseData(sessionId) {
       try {
         const res = await fetch(`/api/poses/${sessionId}`);
         if (res.ok) {
           poseData = await res.json();
-          repMeter.classList.add('active');
+          meterPeakPct = 0;
+          if (!showSkeleton) repMeter.classList.add('active');
         } else {
           poseData = null;
           repMeter.classList.remove('active');
@@ -921,52 +952,92 @@
       }
     }
 
-    // Update meter based on current video time
-    // Uses wrist position signal (universal) if available, falls back to angle
-    function updateRepMeter() {
-      if (!poseData || !poseData.frames || poseData.frames.length === 0) return;
-      if (video.paused) return;
+    function getMeterPct(t) {
+      if (!poseData || !poseData.frames || poseData.frames.length === 0) return 50;
 
-      const t = video.currentTime;
+      // Get video duration from pose data
+      const frames = poseData.frames;
+      const lastFrameTime = frames[frames.length - 1].t;
+      const duration = lastFrameTime || 1;
 
-      let pct = 50;
-
-      // Prefer wrist signal (position-based, exercise-agnostic)
       if (poseData.wrist_signal && poseData.wrist_signal.length > 0) {
-        // wrist_signal has one entry per pose-detected frame (NOT per sample_rate)
-        const fps = poseData.fps || 30;
-        const totalFrames = poseData.wrist_signal.length;
-        const duration = (poseData.frames && poseData.frames.length > 0)
-          ? poseData.frames[poseData.frames.length - 1].t
-          : totalFrames / fps;
-        const idx = Math.floor((t / duration) * totalFrames);
-        const clampedIdx = Math.max(0, Math.min(idx, totalFrames - 1));
-        pct = Math.max(0, Math.min(100, poseData.wrist_signal[clampedIdx] * 100));
+        // wrist_signal: one entry per pose-detected frame
+        const sigLen = poseData.wrist_signal.length;
+
+        // Interpolate between adjacent samples for smoother meter
+        const exactIdx = (t / duration) * sigLen;
+        const lo = Math.max(0, Math.min(Math.floor(exactIdx), sigLen - 1));
+        const hi = Math.min(lo + 1, sigLen - 1);
+        const frac = exactIdx - lo;
+        let val = poseData.wrist_signal[lo] * (1 - frac) + poseData.wrist_signal[hi] * frac;
+
+        // Invert Y-axis signals: MediaPipe Y=0 is top of frame, Y=1 is bottom.
+        // For pressing (bench, shoulder press) and curling, wrist going UP in real
+        // life = lower Y = lower signal. Invert so meter goes UP when weight goes UP.
+        const axis = poseData.wrist_axis || '';
+        if (axis.endsWith('_y')) {
+          val = 1 - val;
+        }
+
+        return Math.max(0, Math.min(100, val * 100));
       } else {
-        // Fallback: use elbow angle
-        let closest = poseData.frames[0];
-        for (const f of poseData.frames) {
+        // Fallback: elbow angle — higher angle = more extended = meter up
+        let closest = frames[0];
+        for (const f of frames) {
           if (f.t <= t) closest = f; else break;
         }
         const angle = Math.max(closest.la, closest.ra);
-        pct = Math.min(100, Math.max(0, (angle / 180) * 100));
+        return Math.min(100, Math.max(0, (angle / 180) * 100));
       }
-
-      repMeterFill.style.height = `${pct}%`;
-
-      if (pct > 70) {
-        repMeterFill.style.background = 'linear-gradient(to top, #34c759, #30d158)';
-      } else if (pct > 40) {
-        repMeterFill.style.background = 'linear-gradient(to top, #ffcc00, #ff9500)';
-      } else {
-        repMeterFill.style.background = 'linear-gradient(to top, #ff3b30, #ff6b5e)';
-      }
-
-      requestAnimationFrame(updateRepMeter);
     }
 
-    // Start meter animation when video plays
-    video.addEventListener('play', () => { if (poseData) requestAnimationFrame(updateRepMeter); });
+    function updateRepMeter() {
+      if (!poseData) { meterAnimating = false; return; }
+
+      const pct = getMeterPct(video.currentTime);
+
+      // Track peak (highest point in current rep cycle)
+      if (pct > meterPeakPct) meterPeakPct = pct;
+      // Reset peak when signal drops significantly (new rep starting)
+      if (pct < meterPeakPct - 30) meterPeakPct = pct;
+
+      repMeterFill.style.height = `${pct}%`;
+      repMeterPeak.style.bottom = `${meterPeakPct}%`;
+
+      // Color: green when high (lockout/extended), red when low (contracted)
+      if (pct > 65) {
+        repMeterFill.style.background = 'linear-gradient(to top, #2a9d4e, #34c759)';
+      } else if (pct > 35) {
+        repMeterFill.style.background = 'linear-gradient(to top, #e8a000, #ffcc00)';
+      } else {
+        repMeterFill.style.background = 'linear-gradient(to top, #cc2d25, #ff3b30)';
+      }
+
+      if (!video.paused) {
+        requestAnimationFrame(updateRepMeter);
+      } else {
+        meterAnimating = false;
+      }
+    }
+
+    function startMeterLoop() {
+      if (!meterAnimating && poseData) {
+        meterAnimating = true;
+        requestAnimationFrame(updateRepMeter);
+      }
+    }
+
+    // Update on play, seek, and scrub
+    video.addEventListener('play', startMeterLoop);
+    video.addEventListener('seeking', () => {
+      if (poseData) {
+        meterPeakPct = 0; // reset peak on seek
+        updateRepMeter();
+      }
+    });
+    video.addEventListener('timeupdate', () => {
+      if (video.paused && poseData) updateRepMeter();
+    });
 
     // ---- Init ----
     loadSessions();

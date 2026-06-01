@@ -254,9 +254,10 @@ def count_reps_from_angles(angles, exercise="bench_press"):
                 state = STATE_EXTENDED
                 last_extended_idx = i
 
-    # Handle incomplete final rep (e.g., racking the bar or video ends mid-recovery).
-    # Only count if we saw significant recovery (>= 50% of the way back to extension).
-    # Do NOT count if video just cuts off at the bottom — that rep isn't confirmed.
+    # Handle incomplete final rep (e.g., video ends mid-recovery).
+    # Only count if we saw significant recovery AND the signal comes back down after.
+    # If recovery happens but signal stays high until end of video, that's a re-rack
+    # (bar going back to hooks), not a real rep.
     if state == STATE_CONTRACTED:
         remaining = smoothed[contracted_idx:]
         if len(remaining) > 5:
@@ -264,8 +265,21 @@ def count_reps_from_angles(angles, exercise="bench_press"):
             recovery = max_after - smoothed[contracted_idx]
             needed = extended_threshold - smoothed[contracted_idx]
             if needed > 0 and recovery / needed >= 0.5:
-                reps += 1
-                rep_indices.append(contracted_idx)
+                # Check for re-rack: if signal recovers and stays high until end,
+                # it's racking the weight, not completing a rep.
+                max_idx = contracted_idx + np.argmax(remaining)
+                after_peak = smoothed[max_idx:]
+                if len(after_peak) > min_transition_frames:
+                    # Signal should drop back down for a real rep
+                    drop_after = max_after - np.min(after_peak)
+                    min_drop = (extended_threshold - contracted_threshold) * 0.2
+                    if drop_after >= min_drop:
+                        reps += 1
+                        rep_indices.append(contracted_idx)
+                    # else: signal stayed high = re-rack, don't count
+                else:
+                    # Very little data after peak — video just ended, don't count
+                    pass
 
     return reps, rep_indices, smoothed.tolist()
 
@@ -546,17 +560,19 @@ def process_video(video_path, exercise="bench_press", output_video=None, verbose
     angles_l = np.array(left_angles)
     angles_r = np.array(right_angles)
 
-    # Pick the side closer to camera (better landmark tracking).
+    # Per-frame adaptive side selection: pick whichever side has the more
+    # realistic angle each frame. When the user turns sideways, one side's
+    # landmarks collapse to near-zero angles. By picking the better side
+    # per-frame, we ride through brief turns without losing reps.
     # The occluded side tends to have unrealistically low angles (landmarks collapse).
-    # A healthy bench press / curl should have median elbow angle ~60-100°.
-    # Use the side with the higher median (more physically realistic).
-    left_median = np.median(angles_l)
-    right_median = np.median(angles_r)
+    primary_angles = np.maximum(angles_l, angles_r)
 
-    if right_median > left_median:
-        primary_angles, primary_side = angles_r, "right"
+    # Determine dominant side for reporting
+    left_better = np.sum(angles_l >= angles_r)
+    if left_better > len(angles_l) / 2:
+        primary_side = "left"
     else:
-        primary_angles, primary_side = angles_l, "left"
+        primary_side = "right"
 
     trimmed_range = np.percentile(primary_angles, 95) - np.percentile(primary_angles, 5)
     print(f"Using {primary_side} side (median: {np.median(primary_angles):.1f}°, range: {trimmed_range:.1f}°)")
